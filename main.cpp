@@ -1,4 +1,5 @@
 #include "include/Main.hpp"
+#include "include/SceneObject.hpp"
 
 bool intersectRayPlane(const Ray &ray, const Vector3 &position, const Vector3 &normal, long double &t)
 {
@@ -27,7 +28,7 @@ bool intersectRayPlane(const Ray &ray, const Vector3 &position, const Vector3 &n
 // Define a function to compute the intersection between a ray and a sphere
 bool intersectRaySphere(Vector3 rayOrigin, Vector3 rayDirection, const Sphere &sphere, long double &t)
 {
-    Vector3 oc = rayOrigin - sphere.center;
+    Vector3 oc = rayOrigin - sphere.position;
     long double a = dot(rayDirection, rayDirection);
     long double b = 2 * dot(oc, rayDirection);
     long double c = dot(oc, oc) - sphere.radius * sphere.radius;
@@ -72,10 +73,10 @@ bool isPointInShadow(const Vector3 &point, const Vector3 &toLight, Sphere sphere
 int main()
 {
     // Define the size of the window and the image resolution
-    const int windowWidth = 800;
-    const int windowHeight = 600;
-    const int imageWidth = 400;
-    const int imageHeight = 300;
+    const int windowWidth = 1000;
+    const int windowHeight = 800;
+    const int imageWidth = 800;
+    const int imageHeight = 600;
 
     // Define the camera
     Vector3 cameraPos(5, 0, 1);
@@ -87,16 +88,10 @@ int main()
     Vector3 lightPos(-10, -15, 0);
     Vector3 lightColor(1, 1, 1);
     const Vector3 highlightColor(1.0l, 1.0l, 1.0l); // white
-    const long double shininess = 50.0l;
+    const long double shininess = 400.0l;
 
     // Define the sphere
-    Sphere sphere(Vector3(-4, 0, 10), 4.0l);
-    // Define the material properties of the objects
-    Vector3 sphereColor(1, 0, 0);
-    long double sphereAmbient = 0.2l;
-    long double sphereDiffuse = 0.2l;
-    long double sphereSpecular = 0.5l;
-    long double sphereShininess = 4.0l;
+    Sphere sphere(Vector3(-3, 0, 10), 4.0l);
 
     // Define the SFML window and image
     sf::RenderWindow window(sf::VideoMode(windowWidth, windowHeight), "Raycasting with SFML");
@@ -111,15 +106,11 @@ int main()
     Vector3 planePosition(0, 0, 10); // position the plane 5 units in front of the camera
     Vector3 planeNormal(10, 0, 10);  // make the plane face towards the camera
     Vector3 planeColor(0, 1, 0);
-    long double planeAmbient = 0.2l;
-    long double planeDiffuse = 0.5l;
-    long double planeSpecular = 0.5l;
-    long double planeShininess = 15.0l;
 
     // Loop through each pixel in the image and cast a ray
-    for (int y = 0; y < imageHeight; y++)
+    for (float y = 0; y < imageHeight; y += 1)
     {
-        for (int x = 0; x < imageWidth; x++)
+        for (float x = 0; x < imageWidth; x += 1)
         {
             // Compute the ray direction for this pixel
             long double fx = (2.0l * (x + 0.5l) / imageWidth - 1.0l) * tan(0.5f * fov * M_PI / 180);
@@ -127,7 +118,7 @@ int main()
             Vector3 rayDir = normalize(cameraDir + fx * cameraUp + fy * cross(cameraDir, cameraUp));
 
             // Cast the ray and compute the color of the pixel
-            long double tSphere, tPlane = 1000000000000000.0l;
+            long double tSphere, tPlane;
             bool hitSphere = intersectRaySphere(cameraPos, rayDir, sphere, tSphere);
             bool hitPlane = intersectRayPlane(Ray(cameraPos, rayDir), planePosition, planeNormal, tPlane);
 
@@ -137,7 +128,7 @@ int main()
             if (hitSphere && (!hitPlane || tSphere < tPlane))
             {
                 // The ray hits the sphere
-                surfaceNormal = normalize(cameraPos + tSphere * rayDir - sphere.center);
+                surfaceNormal = normalize(cameraPos + tSphere * rayDir - sphere.position);
                 distanceToNearestObject = tSphere;
             }
             else if (hitPlane)
@@ -149,30 +140,13 @@ int main()
             else
             {
                 // The ray misses both objects
-                image[y * imageWidth + x] = sf::Color::Black;
+                image[int(y) * imageWidth + int(x)] = sf::Color::Black;
                 continue;
             }
 
             // Compute the direction from the intersection point to the light
             Vector3 toLight = normalize(lightPos - (cameraPos + distanceToNearestObject * rayDir));
             sf::Color blendedColor;
-            // Check if the intersection point is in shadow
-            int shadow = 0;
-            Vector3 shadowColor({0, 0, 0});
-            Vector3 shadowRayOrigin = cameraPos + (distanceToNearestObject + 0.00000000001) * (rayDir);
-            long double tShadow;
-            bool hitShadow = intersectRaySphere(shadowRayOrigin, toLight, sphere, tShadow) || intersectRayPlane(Ray(shadowRayOrigin, toLight), planePosition, planeNormal, tShadow);
-            // if (hitShadow && tShadow < length(toLight - shadowRayOrigin))
-            // {
-            //     // If the point is in shadow, add the shadow color to the pixel color and skip
-            //     blendedColor.r += shadowColor.x * 255;
-            //     blendedColor.g += shadowColor.y * 255;
-            //     blendedColor.b += shadowColor.z * 255;
-            //     shadow = 1;
-            //     image[y * imageWidth + x] = blendedColor;
-            //     continue;
-            // }
-
             // Compute the diffuse component of the color using the Lambertian reflectance model
             long double diffuse = std::max(dot(surfaceNormal, toLight), 0.0l);
 
@@ -180,12 +154,42 @@ int main()
             Vector3 halfway = normalize(toLight - rayDir);
             long double specular = powf(std::max(dot(surfaceNormal, halfway), 0.0l), shininess);
 
+            // Check if the intersection point is in shadow
+            int shadow = 0;
+            Vector3 shadowColor({0, 0, 0});
+            Vector3 shadowRayOrigin = cameraPos + (distanceToNearestObject + 0.00000000001) * (rayDir);
+            long double tShadowSphere, tShadowPlan;
+            bool hitShadowSphere = intersectRaySphere(shadowRayOrigin, toLight, sphere, tShadowSphere);
+            bool hitShadowPlan = intersectRayPlane(Ray(shadowRayOrigin, toLight), planePosition, planeNormal, tShadowPlan);
+
+            if (hitShadowSphere && tShadowSphere < length(toLight - shadowRayOrigin) && tShadowSphere > tShadowPlan)
+            {
+                // If the point is in shadow, add the shadow color to the pixel color and skip
+                blendedColor.r += shadowColor.x * 255;
+                blendedColor.g += shadowColor.y * 255;
+                blendedColor.b += shadowColor.z * 255;
+                shadow = 1;
+                image[int(y) * imageWidth + int(x)] = blendedColor;
+                continue;
+            }
+
+            if (hitShadowPlan && tShadowPlan < length(toLight - shadowRayOrigin) && tShadowPlan > tShadowSphere)
+            {
+                // If the point is in shadow, add the shadow color to the pixel color and skip
+                blendedColor.r = shadowColor.x * 255;
+                blendedColor.g = shadowColor.y * 255;
+                blendedColor.b = shadowColor.z * 255;
+                shadow = 1;
+                image[int(y) * imageWidth + int(x)] = blendedColor;
+                continue;
+            }
+
             // Compute the color of the nearest object
             sf::Color nearestObjectColor;
             if (hitSphere && (!hitPlane || tSphere < tPlane))
             {
                 // The nearest object is the sphere
-                nearestObjectColor = sf::Color(sphereColor.x * 255, sphereColor.y * 255, sphereColor.z * 255);
+                nearestObjectColor = sphere.color;
             }
             else if (hitPlane)
             {
@@ -196,18 +200,19 @@ int main()
             // Compute the blended color of the pixel based on the alpha value of the nearest object color
             long double alpha = 1.0l - expf(-distanceToNearestObject * 0.1l); // Use an exponential function to weight the blending
             //        hitColor = hitObject->albedo / M_PI * light->intensity * light->color * std::max(0.f, hitNormal.dotProduct(L));
+            // (0.2l + 0.5l + 0.5l)
             blendedColor = sf::Color(
-                alpha * nearestObjectColor.r + (1.0l - alpha) * diffuse * 255,
-                alpha * nearestObjectColor.g + (1.0l - alpha) * diffuse * 255,
-                alpha * nearestObjectColor.b + (1.0l - alpha) * diffuse * 255);
+                alpha * nearestObjectColor.r + (1.0l - alpha) * 255,
+                alpha * nearestObjectColor.g + (1.0l - alpha) * 255,
+                alpha * nearestObjectColor.b + (1.0l - alpha) * 255);
 
             // Add the specular highlight to the blended color
-            // blendedColor.r = std::min(blendedColor.r + specular * highlightColor.x * 255, 255.0l);
-            // blendedColor.g = std::min(blendedColor.g + specular * highlightColor.y * 255, 255.0l);
-            // blendedColor.b = std::min(blendedColor.b + specular * highlightColor.z * 255, 255.0l);
+            blendedColor.r = std::min(blendedColor.r + specular * highlightColor.x * 255, 255.0l);
+            blendedColor.g = std::min(blendedColor.g + specular * highlightColor.y * 255, 255.0l);
+            blendedColor.b = std::min(blendedColor.b + specular * highlightColor.z * 255, 255.0l);
 
             // // Set the color of the pixel
-            image[y * imageWidth + x] = blendedColor;
+            image[int(y) * imageWidth + int(x)] = blendedColor;
         }
     }
 

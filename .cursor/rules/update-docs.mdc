@@ -1,0 +1,13 @@
+---
+description: Keep the engine checklist and topic docs current when behavior changes
+alwaysApply: true
+---
+
+# Update engine documentation
+
+When a change adds, removes, or changes engine behavior, update the docs in the same work:
+
+- `docs/engine-checklist.md` — change the status word (`here`, `partial`, `missing`) and the line so it matches the code. Add a line when a new capability appears. Do not delete a missing line just because a neighbor was implemented.
+- The matching page under `docs/` listed at the top of the checklist. Describe how the current code behaves: files, data, order, and numbers a caller can rely on. Keep a short "Not built" section for the checklist lines that are still missing.
+
+Write from the code, not from the previous doc. Leave the docs alone for a change that does not affect those systems.

@@ -1,0 +1,10 @@
+dist/
+*.o
+*.obj
+!assets/*.obj
+*.exe
+raytracer-settings.txt
+raytracer-debug.txt
+*.dll
+*.a
+render.png

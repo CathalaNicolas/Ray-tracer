@@ -90,6 +90,12 @@ bool applyEngineSetting(const std::string &key, const std::string &value)
         s.bloomThreshold = number;
     else if (key == "bloom_strength")
         s.bloomStrength = number >= 0 ? number : s.bloomStrength;
+    else if (key == "view_distance")
+        s.viewDistance = number > 1 ? number : s.viewDistance;
+    else if (key == "shadow_map")
+        s.shadowMapSize = clampInt(number, 256, 2048);
+    else if (key == "particle_density")
+        s.particleDensity = number >= 0 ? number : s.particleDensity;
     else if (key == "frustum_near")
         s.frustumNear = number > 0 ? number : s.frustumNear;
     else if (key == "frustum_far")
@@ -128,6 +134,9 @@ void writeEngineSettings(std::ostream &out)
     out << "mesh_stack " << s.meshStackLimit << '\n';
     out << "bloom_threshold " << s.bloomThreshold << '\n';
     out << "bloom_strength " << s.bloomStrength << '\n';
+    out << "view_distance " << s.viewDistance << '\n';
+    out << "shadow_map " << s.shadowMapSize << '\n';
+    out << "particle_density " << s.particleDensity << '\n';
     out << "frustum_near " << s.frustumNear << '\n';
     out << "frustum_far " << s.frustumFar << '\n';
     out << "snap " << s.snap << '\n';

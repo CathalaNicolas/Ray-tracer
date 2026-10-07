@@ -1,10 +1,15 @@
 #include "GpuRayTracer.hpp"
 
 #include "EngineSettings.hpp"
+#include "EntityId.hpp"
+#include "Frustum.hpp"
+#include "GpuLights.hpp"
 #include "ImageIO.hpp"
 #include "Mesh.hpp"
+#include "MeshRaster.hpp"
 #include "Plane.hpp"
 #include "Sphere.hpp"
+#include "TransformMath.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -227,6 +232,94 @@ std::vector<unsigned char> scaledAlbedo(const LoadedImage &image)
     return dest;
 }
 
+GLenum glInternalFromGpuTex(GpuTexFormat format)
+{
+    switch (format)
+    {
+    case GpuTexFormat::Bc1:
+        return GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+    case GpuTexFormat::Bc2:
+        return GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
+    case GpuTexFormat::Bc3:
+        return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    case GpuTexFormat::Bc5:
+        return GL_COMPRESSED_RG_RGTC2;
+    case GpuTexFormat::Bc7:
+        return GL_COMPRESSED_RGBA_BPTC_UNORM_ARB;
+    default:
+        return GL_RGBA8;
+    }
+}
+
+bool uploadCompressedArray(const std::vector<std::string> &paths)
+{
+    if (glCompressedTexImage3DFn == nullptr || paths.empty())
+        return false;
+    std::vector<const LoadedImage *> images;
+    images.reserve(paths.size());
+    GpuTexFormat format = GpuTexFormat::Rgba8;
+    int width = 0;
+    int height = 0;
+    int mipCount = 0;
+    for (const std::string &path : paths)
+    {
+        const ImageCache &cached = cachedImage(path);
+        if (cached.missing || !cached.image.compressed || cached.image.mips.empty())
+            return false;
+        if (images.empty())
+        {
+            format = cached.image.format;
+            width = cached.image.width;
+            height = cached.image.height;
+            mipCount = static_cast<int>(cached.image.mips.size());
+        }
+        else if (cached.image.format != format || cached.image.width != width || cached.image.height != height)
+            return false;
+        mipCount = std::min(mipCount, static_cast<int>(cached.image.mips.size()));
+        images.push_back(&cached.image);
+    }
+    if (mipCount < 1 || width <= 0 || height <= 0)
+        return false;
+    const GLenum internal = glInternalFromGpuTex(format);
+    const int layers = static_cast<int>(images.size());
+    configureTextureMips(GL_TEXTURE_2D_ARRAY, GL_LINEAR, mipCount - 1);
+    int mipW = width;
+    int mipH = height;
+    for (int mip = 0; mip < mipCount; ++mip)
+    {
+        std::size_t layerBytes = images[0]->mips[static_cast<std::size_t>(mip)].bytes.size();
+        std::vector<std::uint8_t> packed(layerBytes * static_cast<std::size_t>(layers));
+        for (int layer = 0; layer < layers; ++layer)
+        {
+            const ImageMip &level = images[static_cast<std::size_t>(layer)]->mips[static_cast<std::size_t>(mip)];
+            if (level.bytes.size() != layerBytes)
+                return false;
+            std::copy(level.bytes.begin(), level.bytes.end(),
+                packed.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(layer) * layerBytes));
+        }
+        glCompressedTexImage3DFn(GL_TEXTURE_2D_ARRAY, mip, internal, mipW, mipH, layers, 0,
+            static_cast<GLsizei>(packed.size()), packed.data());
+        mipW = std::max(1, mipW / 2);
+        mipH = std::max(1, mipH / 2);
+    }
+    return true;
+}
+
+bool uploadCompressed2D(const LoadedImage &image)
+{
+    if (glCompressedTexImage2DFn == nullptr || !image.compressed || image.mips.empty())
+        return false;
+    const GLenum internal = glInternalFromGpuTex(image.format);
+    configureTextureMips(GL_TEXTURE_2D, GL_LINEAR, static_cast<int>(image.mips.size()) - 1);
+    for (std::size_t mip = 0; mip < image.mips.size(); ++mip)
+    {
+        const ImageMip &level = image.mips[mip];
+        glCompressedTexImage2DFn(GL_TEXTURE_2D, static_cast<GLint>(mip), internal, level.width, level.height, 0,
+            static_cast<GLsizei>(level.bytes.size()), level.bytes.data());
+    }
+    return true;
+}
+
 void pushOpt(std::vector<float> &values, const Material &material, int layer)
 {
     values.push_back(static_cast<float>(material.transmission));
@@ -289,8 +382,8 @@ std::uint64_t sceneFingerprint(const Scene &scene)
     hash = mixBits(hash, scene.objects().size());
     for (const auto &object : scene.objects())
     {
-        hash = mixBits(hash, static_cast<std::uint64_t>(object->id));
-        hash = mixBits(hash, static_cast<std::uint64_t>(object->parentId));
+        hash = mixBits(hash, static_cast<std::uint64_t>(object->id()));
+        hash = mixBits(hash, static_cast<std::uint64_t>(object->parentId()));
         const Material material = object->material();
         mixMaterial(hash, material);
         object->mixShapeHash(hash);
@@ -324,7 +417,7 @@ int GpuRayTracer::render(
     int height,
     int sampleGrid,
     int maxDepth,
-    int selectedObject,
+    EntityId selectedObject,
     bool linearOutput,
     int sampleIndex,
     double timeSeconds,
@@ -341,9 +434,9 @@ int GpuRayTracer::render(
         struct MeshProbe : gpu_detail::GpuContribute
         {
             bool hasMesh = false;
-            void sphere(const Hittable &, const Vec3 &, double) override {}
-            void plane(const Hittable &, const Vec3 &, const Vec3 &, bool, const Vec3 &, double) override {}
-            void mesh(const Mesh &object) override
+            void sphere(const Object &, const Vec3 &, double) override {}
+            void plane(const Object &, const Vec3 &, const Vec3 &, bool, const Vec3 &, double) override {}
+            void mesh(const Object &object) override
             {
                 if (!object.triangles().empty())
                     hasMesh = true;
@@ -351,7 +444,7 @@ int GpuRayTracer::render(
         } probe;
         for (const auto &object : scene.objects())
         {
-            object->contributeGpu(probe);
+            gpu_detail::contribute(*object, probe);
             if (probe.hasMesh)
                 break;
         }
@@ -373,13 +466,20 @@ int GpuRayTracer::render(
 
     const std::uint64_t fingerprint = sceneFingerprint(scene);
     bool reuse = haveFingerprint_ && fingerprint == storedFingerprint_ && materialTex_ != 0 && instanceTex_ != 0 && storedShadowClip_.size() == static_cast<size_t>(kGpuMaxLights) * 16;
+    int wantShadow = engineSettings().shadowMapSize;
+    if (wantShadow < 256)
+        wantShadow = 256;
+    if (wantShadow > 2048)
+        wantShadow = 2048;
+    if (shadowReady_ && shadowSize_ != wantShadow)
+        reuse = false;
     {
         struct MeshProbe : gpu_detail::GpuContribute
         {
             bool hasMesh = false;
-            void sphere(const Hittable &, const Vec3 &, double) override {}
-            void plane(const Hittable &, const Vec3 &, const Vec3 &, bool, const Vec3 &, double) override {}
-            void mesh(const Mesh &object) override
+            void sphere(const Object &, const Vec3 &, double) override {}
+            void plane(const Object &, const Vec3 &, const Vec3 &, bool, const Vec3 &, double) override {}
+            void mesh(const Object &object) override
             {
                 if (!object.triangles().empty())
                     hasMesh = true;
@@ -387,7 +487,7 @@ int GpuRayTracer::render(
         } probe;
         for (const auto &object : scene.objects())
         {
-            object->contributeGpu(probe);
+            gpu_detail::contribute(*object, probe);
             if (probe.hasMesh)
                 break;
         }
@@ -412,6 +512,7 @@ int GpuRayTracer::render(
     std::vector<std::string> normalPaths;
     std::vector<MeshTri> meshTriangles;
     std::vector<float> meshVertices;
+    std::vector<std::uint32_t> meshIndices;
     std::vector<BvhNode> meshNodes;
     std::vector<float> meshMin;
     std::vector<float> meshMax;
@@ -476,8 +577,13 @@ int GpuRayTracer::render(
     {
         const MeshGeometry *geometry = nullptr;
         int root = -1;
+        int indexOffset = 0;
+        int indexCount = 0;
     };
     std::vector<SharedGeom> sharedGeoms;
+    std::vector<MeshRasterInstance> rasterInstances;
+    const double viewDistance = engineSettings().viewDistance > 1 ? engineSettings().viewDistance : kGpuClipFarDefault;
+    const Frustum viewFrustum = frustumFromCamera(camera, kGpuClipNear, viewDistance);
 
     struct UploadSink : gpu_detail::GpuContribute
     {
@@ -496,6 +602,7 @@ int GpuRayTracer::render(
         std::vector<int> *planeIds = nullptr;
         std::vector<MeshTri> *meshTriangles = nullptr;
         std::vector<float> *meshVertices = nullptr;
+        std::vector<std::uint32_t> *meshIndices = nullptr;
         std::vector<BvhNode> *meshNodes = nullptr;
         std::vector<float> *meshMin = nullptr;
         std::vector<float> *meshMax = nullptr;
@@ -504,10 +611,15 @@ int GpuRayTracer::render(
         std::function<int(const std::string &)> textureLayer;
         std::function<int(const std::string &)> normalLayer;
         std::function<void(int, int, const Material &, int)> writeMaterial;
+        std::function<int(EntityId)> compactId;
         int *meshCount = nullptr;
         int *triangleCount = nullptr;
         int *hasGlass = nullptr;
         bool reuse = false;
+        Frustum frustum;
+        Vec3 origin;
+        double viewDistance = kGpuClipFarDefault;
+        std::vector<MeshRasterInstance> *rasterInstances = nullptr;
 
         void writeInstance(int instance, int row, float x, float y, float z, float w)
         {
@@ -518,9 +630,11 @@ int GpuRayTracer::render(
             (*instanceTex)[at + 3] = w;
         }
 
-        void sphere(const Hittable &object, const Vec3 &center, double worldRadius) override
+        void sphere(const Object &object, const Vec3 &center, double worldRadius) override
         {
             if (static_cast<int>(sphereIds->size()) >= kGpuMaxSpheres)
+                return;
+            if (sphereBeyondDistance(center, worldRadius, origin, viewDistance))
                 return;
             sphereGeom->push_back(static_cast<float>(center.x));
             sphereGeom->push_back(static_cast<float>(center.y));
@@ -541,12 +655,12 @@ int GpuRayTracer::render(
                 writeMaterial(0, static_cast<int>(sphereIds->size()), material, sphereNormal);
             if (material.transmission > 0.001)
                 *hasGlass = 1;
-            sphereIds->push_back(object.id);
+            sphereIds->push_back(compactId(object.id()));
             if (material.reflectivity > engineSettings().mirrorReflectMin && material.transmission <= 0.001 && mirrorIds->size() < 8)
                 mirrorIds->push_back(static_cast<int>(sphereIds->size()) - 1);
         }
 
-        void plane(const Hittable &object, const Vec3 &point, const Vec3 &normal, bool checker, const Vec3 &checkerAlbedo, double checkerScale) override
+        void plane(const Object &object, const Vec3 &point, const Vec3 &normal, bool checker, const Vec3 &checkerAlbedo, double checkerScale) override
         {
             if (static_cast<int>(planeIds->size()) >= kGpuMaxPlanes)
                 return;
@@ -574,13 +688,14 @@ int GpuRayTracer::render(
                 writeMaterial(1, static_cast<int>(planeIds->size()), material, planeNormalLayer);
             if (material.transmission > 0.001)
                 *hasGlass = 1;
-            planeIds->push_back(object.id);
+            planeIds->push_back(compactId(object.id()));
         }
 
-        void mesh(const Mesh &meshObject) override
+        void mesh(const Object &meshObject) override
         {
             const MeshGeometry *geometry = meshObject.geometry().get();
-            if (*meshCount >= kGpuMaxMeshes || geometry == nullptr || geometry->root < 0 || geometry->triangles.empty())
+            if (*meshCount >= kGpuMaxMeshes || geometry == nullptr || geometry->root < 0 || geometry->positions.empty()
+                || geometry->indices.size() < 3 || geometry->triangles.empty())
                 return;
             int shared = -1;
             for (int index = 0; index < static_cast<int>(sharedGeoms->size()); ++index)
@@ -611,53 +726,57 @@ int GpuRayTracer::render(
                 meshTriangles->insert(meshTriangles->end(), geometry->triangles.begin(), geometry->triangles.end());
                 meshNodes->insert(meshNodes->end(), nodes.begin(), nodes.end());
                 *triangleCount += static_cast<int>(geometry->triangles.size());
-                shared = static_cast<int>(sharedGeoms->size());
-                sharedGeoms->push_back(SharedGeom{geometry, geometry->root + nodeOffset});
-            }
-            const int root = (*sharedGeoms)[static_cast<size_t>(shared)].root;
-            Vec3 axisX;
-            Vec3 axisY;
-            Vec3 axisZ;
-            meshObject.worldAxes(axisX, axisY, axisZ);
-            const double worldScale = meshObject.worldScale();
-            Vec3 boundsMin(1e30, 1e30, 1e30);
-            Vec3 boundsMax(-1e30, -1e30, -1e30);
-            for (int corner = 0; corner < 8; ++corner)
-            {
-                const Vec3 local(
-                    (corner & 1) != 0 ? geometry->boundsMax.x : geometry->boundsMin.x,
-                    (corner & 2) != 0 ? geometry->boundsMax.y : geometry->boundsMin.y,
-                    (corner & 4) != 0 ? geometry->boundsMax.z : geometry->boundsMin.z);
-                const Vec3 world = meshObject.position() + (axisX * local.x + axisY * local.y + axisZ * local.z) * worldScale;
-                boundsMin.x = std::min(boundsMin.x, world.x);
-                boundsMin.y = std::min(boundsMin.y, world.y);
-                boundsMin.z = std::min(boundsMin.z, world.z);
-                boundsMax.x = std::max(boundsMax.x, world.x);
-                boundsMax.y = std::max(boundsMax.y, world.y);
-                boundsMax.z = std::max(boundsMax.z, world.z);
-            }
-            boundsMin = boundsMin - Vec3(1e-3, 1e-3, 1e-3);
-            boundsMax = boundsMax + Vec3(1e-3, 1e-3, 1e-3);
-            for (const MeshTri &triangle : geometry->triangles)
-            {
-                for (int corner = 0; corner < 3; ++corner)
+                const int vertexBase = static_cast<int>(meshVertices->size() / 8);
+                for (size_t i = 0; i < geometry->positions.size(); ++i)
                 {
-                    const Vec3 local = triangle.position[corner];
-                    const Vec3 position = meshObject.position() + (axisX * local.x + axisY * local.y + axisZ * local.z) * worldScale;
-                    Vec3 normal = axisX * triangle.normal[corner].x + axisY * triangle.normal[corner].y + axisZ * triangle.normal[corner].z;
-                    if (length(normal) > 1e-8)
-                        normal = normalize(normal);
-                    meshVertices->push_back(static_cast<float>(position.x));
-                    meshVertices->push_back(static_cast<float>(position.y));
-                    meshVertices->push_back(static_cast<float>(position.z));
+                    const Vec3 &local = geometry->positions[i];
+                    const Vec3 &normal = i < geometry->normals.size() ? geometry->normals[i] : Vec3(0, 1, 0);
+                    meshVertices->push_back(static_cast<float>(local.x));
+                    meshVertices->push_back(static_cast<float>(local.y));
+                    meshVertices->push_back(static_cast<float>(local.z));
                     meshVertices->push_back(static_cast<float>(normal.x));
                     meshVertices->push_back(static_cast<float>(normal.y));
                     meshVertices->push_back(static_cast<float>(normal.z));
-                    meshVertices->push_back(triangle.u[corner]);
-                    meshVertices->push_back(triangle.v[corner]);
-                    meshVertices->push_back(static_cast<float>(*meshCount));
+                    meshVertices->push_back(i < geometry->u.size() ? geometry->u[i] : 0.f);
+                    meshVertices->push_back(i < geometry->v.size() ? geometry->v[i] : 0.f);
                 }
+                const int indexOffset = static_cast<int>(meshIndices->size());
+                for (std::uint32_t index : geometry->indices)
+                    meshIndices->push_back(static_cast<std::uint32_t>(vertexBase) + index);
+                shared = static_cast<int>(sharedGeoms->size());
+                sharedGeoms->push_back(SharedGeom{geometry, geometry->root + nodeOffset, indexOffset,
+                    static_cast<int>(geometry->indices.size())});
             }
+            Vec3 boundsMin;
+            Vec3 boundsMax;
+            meshWorldAabb(meshObject, boundsMin, boundsMax);
+            if (aabbBeyondDistance(boundsMin, boundsMax, origin, viewDistance))
+                return;
+            const int root = (*sharedGeoms)[static_cast<size_t>(shared)].root;
+            const glm::dmat4 worldMatrix = meshObject.displayWorldMatrix();
+            const Vec3 center = (boundsMin + boundsMax) * 0.5;
+            const Vec3 toCenter = center - origin;
+            MeshRasterInstance instance;
+            instance.geom = shared;
+            instance.objectId = meshObject.id();
+            instance.meshId = static_cast<float>(*meshCount);
+            instance.px = static_cast<float>(worldMatrix[3].x);
+            instance.py = static_cast<float>(worldMatrix[3].y);
+            instance.pz = static_cast<float>(worldMatrix[3].z);
+            instance.scale = 1.0f;
+            instance.ax = static_cast<float>(worldMatrix[0].x);
+            instance.ay = static_cast<float>(worldMatrix[0].y);
+            instance.az = static_cast<float>(worldMatrix[0].z);
+            instance.bx = static_cast<float>(worldMatrix[1].x);
+            instance.by = static_cast<float>(worldMatrix[1].y);
+            instance.bz = static_cast<float>(worldMatrix[1].z);
+            instance.cx = static_cast<float>(worldMatrix[2].x);
+            instance.cy = static_cast<float>(worldMatrix[2].y);
+            instance.cz = static_cast<float>(worldMatrix[2].z);
+            instance.transparent = meshObject.material().transmission > 0.001;
+            instance.inFrustum = !frustumAabbOutside(frustum, boundsMin, boundsMax);
+            instance.sortKey = dot(toCenter, toCenter);
+            rasterInstances->push_back(instance);
             meshMin->push_back(static_cast<float>(boundsMin.x));
             meshMin->push_back(static_cast<float>(boundsMin.y));
             meshMin->push_back(static_cast<float>(boundsMin.z));
@@ -671,11 +790,11 @@ int GpuRayTracer::render(
             writeInstance(*meshCount, 1, static_cast<float>(material.diffuse), static_cast<float>(material.specular), reuse ? 0.0f : shadeExponent(material), static_cast<float>(material.reflectivity));
             writeInstance(*meshCount, 2, static_cast<float>(material.transmission), static_cast<float>(material.ior), static_cast<float>(textureLayer(material.albedoMap)), static_cast<float>(material.uvScale > 0 ? material.uvScale : 1.0));
             writeInstance(*meshCount, 3, static_cast<float>(boundsMin.x), static_cast<float>(boundsMin.y), static_cast<float>(boundsMin.z), static_cast<float>(root));
-            writeInstance(*meshCount, 4, static_cast<float>(boundsMax.x), static_cast<float>(boundsMax.y), static_cast<float>(boundsMax.z), static_cast<float>(meshObject.id));
-            writeInstance(*meshCount, 5, static_cast<float>(meshObject.position().x), static_cast<float>(meshObject.position().y), static_cast<float>(meshObject.position().z), static_cast<float>(worldScale));
-            writeInstance(*meshCount, 6, static_cast<float>(axisX.x), static_cast<float>(axisX.y), static_cast<float>(axisX.z), 0.0f);
-            writeInstance(*meshCount, 7, static_cast<float>(axisY.x), static_cast<float>(axisY.y), static_cast<float>(axisY.z), 0.0f);
-            writeInstance(*meshCount, 8, static_cast<float>(axisZ.x), static_cast<float>(axisZ.y), static_cast<float>(axisZ.z), 0.0f);
+            writeInstance(*meshCount, 4, static_cast<float>(boundsMax.x), static_cast<float>(boundsMax.y), static_cast<float>(boundsMax.z), static_cast<float>(compactId(meshObject.id())));
+            writeInstance(*meshCount, 5, static_cast<float>(worldMatrix[3].x), static_cast<float>(worldMatrix[3].y), static_cast<float>(worldMatrix[3].z), 1.0f);
+            writeInstance(*meshCount, 6, static_cast<float>(worldMatrix[0].x), static_cast<float>(worldMatrix[0].y), static_cast<float>(worldMatrix[0].z), 0.0f);
+            writeInstance(*meshCount, 7, static_cast<float>(worldMatrix[1].x), static_cast<float>(worldMatrix[1].y), static_cast<float>(worldMatrix[1].z), 0.0f);
+            writeInstance(*meshCount, 8, static_cast<float>(worldMatrix[2].x), static_cast<float>(worldMatrix[2].y), static_cast<float>(worldMatrix[2].z), 0.0f);
             const int meshNormal = normalLayer(material.normalMap);
             if (!reuse)
                 writeMaterial(2, *meshCount, material, meshNormal);
@@ -684,6 +803,18 @@ int GpuRayTracer::render(
             ++(*meshCount);
         }
     } upload;
+    std::unordered_map<EntityId, int> gpuIds;
+    int nextGpuId = 1;
+    auto compactIdOf = [&](EntityId id) {
+        if (id == kInvalidEntityId)
+            return 0;
+        const auto found = gpuIds.find(id);
+        if (found != gpuIds.end())
+            return found->second;
+        const int compact = nextGpuId++;
+        gpuIds.emplace(id, compact);
+        return compact;
+    };
     upload.sphereGeom = &sphereGeom;
     upload.sphereAlbedo = &sphereAlbedo;
     upload.sphereMat = &sphereMat;
@@ -699,6 +830,7 @@ int GpuRayTracer::render(
     upload.planeIds = &planeIds;
     upload.meshTriangles = &meshTriangles;
     upload.meshVertices = &meshVertices;
+    upload.meshIndices = &meshIndices;
     upload.meshNodes = &meshNodes;
     upload.meshMin = &meshMin;
     upload.meshMax = &meshMax;
@@ -707,22 +839,36 @@ int GpuRayTracer::render(
     upload.textureLayer = textureLayer;
     upload.normalLayer = normalLayer;
     upload.writeMaterial = writeMaterial;
+    upload.compactId = compactIdOf;
     upload.meshCount = &meshCount;
     upload.triangleCount = &triangleCount;
     upload.hasGlass = &hasGlass;
     upload.reuse = reuse;
+    upload.frustum = viewFrustum;
+    upload.origin = camera.origin();
+    upload.viewDistance = viewDistance;
+    upload.rasterInstances = &rasterInstances;
     for (const auto &object : scene.objects())
-        object->contributeGpu(upload);
+        gpu_detail::contribute(*object, upload);
+    std::stable_sort(rasterInstances.begin(), rasterInstances.end(), [](const MeshRasterInstance &left, const MeshRasterInstance &right) {
+        if (left.transparent != right.transparent)
+            return !left.transparent && right.transparent;
+        if (left.transparent && left.sortKey != right.sortKey)
+            return left.sortKey > right.sortKey;
+        return left.geom < right.geom;
+    });
+    std::vector<MeshRasterGeom> rasterGeoms(sharedGeoms.size());
+    for (size_t index = 0; index < sharedGeoms.size(); ++index)
+        rasterGeoms[index] = MeshRasterGeom{sharedGeoms[index].indexOffset, sharedGeoms[index].indexCount};
 
     std::vector<float> lightPos;
     std::vector<float> lightColor;
     std::vector<float> lightAux;
     std::vector<float> lightSpot;
     int lightCount = 0;
-    for (const PointLight &light : scene.lights())
-    {
+    auto appendPointLight = [&](const PointLight &light) {
         if (lightCount >= kGpuMaxLights)
-            break;
+            return;
         lightPos.push_back(static_cast<float>(light.position.x));
         lightPos.push_back(static_cast<float>(light.position.y));
         lightPos.push_back(static_cast<float>(light.position.z));
@@ -757,15 +903,12 @@ int GpuRayTracer::render(
             lightSpot.push_back(0.0f);
         }
         ++lightCount;
-    }
-    for (const auto &object : scene.objects())
-    {
+    };
+    auto appendEmissive = [&](const Object &object) {
         if (lightCount >= kGpuMaxLights)
-            break;
-        const Material material = object->material();
-        if (material.emission <= 0.01)
-            continue;
-        const Vec3 position = object->worldPosition();
+            return;
+        const Material material = object.material();
+        const Vec3 position = object.displayWorldPosition();
         lightPos.push_back(static_cast<float>(position.x));
         lightPos.push_back(static_cast<float>(position.y));
         lightPos.push_back(static_cast<float>(position.z));
@@ -777,12 +920,19 @@ int GpuRayTracer::render(
         lightAux.push_back(0.0f);
         lightAux.push_back(0.0f);
         lightAux.push_back(0.0f);
-        lightAux.push_back(static_cast<float>(object->id));
+        lightAux.push_back(static_cast<float>(compactIdOf(object.id())));
         lightSpot.push_back(0.0f);
         lightSpot.push_back(0.0f);
         lightSpot.push_back(0.0f);
         lightSpot.push_back(0.0f);
         ++lightCount;
+    };
+    for (const GpuLightPick &pick : rankGpuLights(scene, camera.origin(), kGpuMaxLights))
+    {
+        if (!pick.fromObject)
+            appendPointLight(scene.lights()[pick.index]);
+        else
+            appendEmissive(*scene.objects()[pick.index]);
     }
 
     std::vector<float> triangleTexels;
@@ -869,7 +1019,8 @@ int GpuRayTracer::render(
     }
     setReuseShadowMaps(reuse);
     if (meshCount > 0)
-        rasterizeMeshes(camera, scene, meshVertices, meshMin, meshMax, meshCount, width, height, shadowClip, grid, sampleIndex);
+        rasterizeMeshes(camera, scene, meshVertices, meshIndices, rasterGeoms, rasterInstances, meshMin, meshMax, meshCount,
+            width, height, shadowClip, grid, sampleIndex);
     if (!reuse)
     {
         storedShadowClip_ = shadowClip;
@@ -912,7 +1063,7 @@ int GpuRayTracer::render(
     glUniform1iFn(location("uSampleOffset"), fold ? sampleIndex : 0);
     glUniform1iFn(location("uSampleBatch"), fold ? 1 : 0);
     glUniform1iFn(location("uDepth"), maxDepth);
-    glUniform1iFn(location("uSelected"), selectedObject);
+    glUniform1iFn(location("uSelected"), compactIdOf(selectedObject));
     glUniform1iFn(location("uLinear"), (linearOutput || fold) ? 1 : 0);
     if (!reuse)
     {
@@ -1016,21 +1167,22 @@ int GpuRayTracer::render(
     glBindTexture(GL_TEXTURE_2D_ARRAY, albedoArray_);
     if (newAlbedo || albedoKey != albedoKey_)
     {
-        configureTexture(GL_TEXTURE_2D_ARRAY, GL_LINEAR);
         if (texturePaths.empty())
         {
+            configureTexture(GL_TEXTURE_2D_ARRAY, GL_LINEAR);
             const unsigned char white[4] = {255, 255, 255, 255};
             glTexImage3DFn(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
         }
-        else
+        else if (!uploadCompressedArray(texturePaths))
         {
+            configureTexture(GL_TEXTURE_2D_ARRAY, GL_LINEAR);
             const int layers = static_cast<int>(texturePaths.size());
             std::vector<unsigned char> pixels(static_cast<size_t>(kAlbedoEdge) * kAlbedoEdge * 4 * static_cast<size_t>(layers), 255);
             for (int layer = 0; layer < layers; ++layer)
             {
                 const ImageCache &cached = cachedImage(texturePaths[static_cast<size_t>(layer)]);
                 std::vector<unsigned char> scaled(static_cast<size_t>(kAlbedoEdge) * kAlbedoEdge * 4, 255);
-                if (!cached.missing && cached.image.width > 0)
+                if (!cached.missing && cached.image.width > 0 && !cached.image.rgba8.empty())
                     scaled = scaledAlbedo(cached.image);
                 const size_t offset = static_cast<size_t>(layer) * scaled.size();
                 std::copy(scaled.begin(), scaled.end(), pixels.begin() + static_cast<std::ptrdiff_t>(offset));
@@ -1073,21 +1225,22 @@ int GpuRayTracer::render(
     glBindTexture(GL_TEXTURE_2D_ARRAY, normalArray_);
     if (newNormal || normalKey != normalKey_)
     {
-        configureTexture(GL_TEXTURE_2D_ARRAY, GL_LINEAR);
         if (normalPaths.empty())
         {
+            configureTexture(GL_TEXTURE_2D_ARRAY, GL_LINEAR);
             const unsigned char flat[4] = {128, 128, 255, 255};
             glTexImage3DFn(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, flat);
         }
-        else
+        else if (!uploadCompressedArray(normalPaths))
         {
+            configureTexture(GL_TEXTURE_2D_ARRAY, GL_LINEAR);
             const int layers = static_cast<int>(normalPaths.size());
             std::vector<unsigned char> pixels(static_cast<size_t>(kAlbedoEdge) * kAlbedoEdge * 4 * static_cast<size_t>(layers), 255);
             for (int layer = 0; layer < layers; ++layer)
             {
                 const ImageCache &cached = cachedImage(normalPaths[static_cast<size_t>(layer)]);
                 std::vector<unsigned char> scaled(static_cast<size_t>(kAlbedoEdge) * kAlbedoEdge * 4, 255);
-                if (!cached.missing && cached.image.width > 0)
+                if (!cached.missing && cached.image.width > 0 && !cached.image.rgba8.empty())
                     scaled = scaledAlbedo(cached.image);
                 else
                 {
@@ -1136,8 +1289,13 @@ int GpuRayTracer::render(
             const unsigned char black[4] = {0, 0, 0, 255};
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, black);
         }
+        else if (uploadCompressed2D(*envImage))
+        {
+            // BC env maps upload native orientation (no CPU Y-flip).
+        }
         else if (envImage->hdr)
         {
+            configureTexture(GL_TEXTURE_2D, GL_LINEAR);
             std::vector<unsigned short> half(static_cast<size_t>(envImage->width) * static_cast<size_t>(envImage->height) * 4);
             for (int y = 0; y < envImage->height; ++y)
             {
@@ -1154,6 +1312,7 @@ int GpuRayTracer::render(
         }
         else
         {
+            configureTexture(GL_TEXTURE_2D, GL_LINEAR);
             std::vector<unsigned char> flipped(envImage->rgba8.size());
             const size_t row = static_cast<size_t>(envImage->width) * 4;
             for (int y = 0; y < envImage->height; ++y)

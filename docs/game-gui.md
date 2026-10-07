@@ -4,7 +4,7 @@ The HUD and the pause window are ImGui, drawn over the ray-traced image. They ar
 
 ## HUD
 
-`drawPlayHud` runs only while playing. It sits 16 pixels from the top-left of the main viewport, with a translucent background, and it ignores the mouse.
+`drawPlayHud` runs only while playing. It reads the latest `Snapshot` (score, health, message, look ray), not `PlayState` directly. It sits 16 pixels from the top-left of the main viewport, with a translucent background, and it ignores the mouse.
 
 - No player sphere: the text `No player`.
 - Otherwise: `Score: N    Health: N`. Health starts at 3. A pickup adds the line `Picked up` under the score.
@@ -16,7 +16,7 @@ The HUD and the pause window are ImGui, drawn over the ray-traced image. They ar
 Escape toggles pause while the round is open. The window is centered.
 
 - Resume clears `paused`. The simulation continues. The scene is not restored.
-- Step runs one `1/60` s tick and stays paused. Held move keys and F apply.
+- Step runs one `1/30` s tick and stays paused. Held move keys and F apply. The view shows that tick's snapshot (no leftover lerp).
 - Speed scales simulation time from `0.25×` to `2×`. The editor also shows that slider while play is running.
 - A win or a loss replaces Resume and Step with the line `You win` or `You lose`, and Restart. Restart copies the snapshot from Play, clears the score and the result, and stays in play. Escape does not resume that window.
 - Quit in the editor leaves play, which restores the snapshot.

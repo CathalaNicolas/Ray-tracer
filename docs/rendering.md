@@ -11,8 +11,8 @@ Bloom runs after that image is tone-mapped, and only when linear output is off. 
 ## What draws what
 
 - Spheres and planes are ray traced in the shader.
-- Mesh primary visibility is a raster mesh. The vertex buffer is world-space, with the instance index in an extra channel.
-- Mesh shadows come from shadow maps. A point light, including an emissive Lamp, fills its 1024 layer with six 90° faces in a 3 by 2 grid. Each face is clipped, so a triangle that crosses a face edge does not stretch across the map. The pass draws back faces only, then the shader averages 4 taps inside the face. A directional light uses one orthographic map of the full layer. A render whose lights, emissive objects, mesh transforms, and materials match the previous one keeps those maps and the material rows. The camera uniforms are uploaded every frame.
+- Mesh primary visibility is a raster mesh. Unique geometry is uploaded once in local space (indexed verts + element buffer). Each placement is an instance (`aPlace`, axes, `aMesh`) drawn with `glDrawElementsInstanced`. Opaque instances in the camera frustum draw first; transparent (`transmission > 0.001`) instances draw after, far to near. Depth test stays on; there is no alpha blend in the g-buffer.
+- Mesh shadows come from shadow maps. Size is `shadow_map` (default 1024, 256..2048). A point light, including an emissive Lamp, fills its layer with six 90° faces in a 3 by 2 grid. Each face is clipped, so a triangle that crosses a face edge does not stretch across the map. The pass draws back faces only, then the shader averages 4 taps inside the face. A directional light uses one orthographic map of the full layer. Shadow casters are every uploaded mesh instance (view-distance culled, not frustum culled). A render whose lights, emissive objects, mesh transforms, and materials match the previous one keeps those maps and the material rows unless the shadow map size changed. The camera uniforms are uploaded every frame.
 - A mesh reflection is traced when reflectivity is above `0.35`. `traceMesh` walks that mesh's BVH in local space.
 - A sphere with reflectivity above `0.35` and no transmission bounces each light once, and only on the camera's first hit. The shader walks up to 8 such spheres (`uMirrorIndex`). Eight iterations place the point whose normal bisects the light and the surface. The bounce is kept only when `reflect` of the light direction matches the direction to the surface, with a dot of at least `0.995`. Strength is the light color times intensity, divided by `1 + falloff * distance²` from that point to the surface, times the facing term, the sphere albedo, and its reflectivity. An object between that point and the surface leaves a shadow in the bounced light. Spheres, planes, and meshes block the way to that point. The light's shadow test blocks the way from the sphere to the light. The mirror sphere and the emissive object that made the light are skipped. Reflection and glass rays do not bounce again. Among the first four mirror spheres, the one the surface faces can send a bounce on from each of the others. The solver stops once both reflection points match with a dot of at least `0.995`. An object between those points blocks it. Planes and meshes do not bounce light. The floor at `0.14` is not a bounce source. Settings → Mirror bounces off uploads `uMirrorCount` 0 for that frame.
 - Glass transmission traces meshes through `traceMesh`. A floor reflectivity of `0.14` does not trace meshes.
@@ -20,13 +20,15 @@ Bloom runs after that image is tone-mapped, and only when linear output is off. 
 
 The glass job stack, trace limit, and mesh BVH stack are `EngineSettings` keys (`job_stack`, `trace_limit`, `mesh_stack`), uploaded as uniforms and clamped to the fixed GLSL array sizes 8 / 24 / 24. Defaults match those sizes. The editor status line warns when the mesh stack is below BVH depth, or when glass needs more job stack or trace steps than the settings allow. The fat path must not use a literal constant loop bound.
 
+View distance (`view_distance`, default 2000) is the raster far plane and a CPU drop: a sphere whose surface is farther than that, or a mesh AABB whose closest point is farther, is not uploaded. Color-pass mesh instances also skip `frustumAabbOutside` (`Frustum.hpp`, same pinhole clip as the raster, near 0.02). Off-screen meshes still receive shadow-map draws and still occupy instance/BVH slots when they are inside view distance, so reflections can see them.
+
 ## Samples, tone, and depth of field
 
 The Samples slider is `N` for an `N×N` grid, from 1 to 4. While the editor is idle the GPU adds one sample at a time until that grid is full. Play and any camera or scene edit drop back to one sample and restart the count.
 
 `trace()` uploads `uLinear = 1` and must not clamp color to 1. `max(color, 0)` is fine. Reinhard `color / (1 + color)`, then gamma 2.2, runs only when `uLinear == 0`, which is the display path. Tests that compare the opaque non-glass image stay numerically identical when aperture is 0 and linear output is on.
 
-Depth of field uses a Vogel disk when aperture is above 0 and the sample count is above 1. Aperture 0, or a single sample, stays a pinhole. `cameraClipMatrix` stays as written.
+Depth of field uses a Vogel disk when aperture is above 0 and the sample count is above 1. Aperture 0, or a single sample, stays a pinhole. `cameraClipMatrix` stays as written, except its far plane is `EngineSettings::viewDistance` (default 2000).
 
 ## GPU data
 
@@ -66,9 +68,9 @@ Old per-mesh uniform arrays (`uMeshLeft`, `uMeshRight`, and the rest) are gone. 
 - Volumetric light. Distance fog is the color and density above.
 - Glass that can see meshes.
 - Decals, particles, skeletal meshes, and morph targets.
-- GPU instanced drawing. Sharing is in the triangle storage, while the raster mesh is still expanded per placement.
-- Frustum and occlusion culling.
-- A full-scene forward or deferred raster.
+- GPU instanced drawing of shared mesh geometry, plus CPU frustum cull of color-pass instances. Occlusion culling, portals, and a Diligent/D3D12 path are not built.
+- Clustered forward lighting. The shader still walks at most 8 lights.
+- A full-scene forward or deferred raster if ray tracing stops being the look.
 - Bloom, grading, vignette, motion blur, and anti-aliasing beyond the sample grid.
 - Separate render layers for world, effects, and UI. The editor and HUD are ImGui on top of the image.
 - Video capture. Save PNG writes the current image.

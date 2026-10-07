@@ -13,12 +13,12 @@
 namespace
 {
 
-void copyPrefabFields(Hittable &destination, const Hittable &source)
+void copyPrefabFields(Object &destination, const Object &source)
 {
     destination.setMaterial(source.material());
-    destination.setTag(source.tag);
-    destination.layer = source.layer;
-    destination.motion = source.motion;
+    destination.setTag(source.tag());
+    destination.layer() = source.layer();
+    destination.motion() = source.motion();
     destination.copyShapeFrom(source);
 }
 
@@ -75,22 +75,22 @@ void mixMotion(std::uint64_t &hash, const Motion &motion)
     mixDouble(hash, motion.period);
 }
 
-void mixCopiedSource(std::uint64_t &hash, const Hittable &source)
+void mixCopiedSource(std::uint64_t &hash, const Object &source)
 {
     mixMaterial(hash, source.material());
-    mixString(hash, source.tag);
-    mix(hash, static_cast<std::uint64_t>(source.layer));
-    mixMotion(hash, source.motion);
+    mixString(hash, source.tag());
+    mix(hash, static_cast<std::uint64_t>(source.layer()));
+    mixMotion(hash, source.motion());
     source.mixShapeHash(hash);
 }
 
-std::uint64_t sourceFingerprint(const Hittable &source, const std::vector<Hittable *> &children)
+std::uint64_t sourceFingerprint(const Object &source, const std::vector<Object *> &children)
 {
     std::uint64_t hash = 0;
     mixString(hash, source.kind());
     mixCopiedSource(hash, source);
     mix(hash, children.size());
-    for (const Hittable *child : children)
+    for (const Object *child : children)
     {
         mixString(hash, child->kind());
         mixCopiedSource(hash, *child);
@@ -105,17 +105,17 @@ void syncPrefabInstances(Scene &scene)
 {
     struct Applied
     {
-        int id = 0;
+        EntityId id = kInvalidEntityId;
         std::uint64_t hash = 0;
     };
-    static std::unordered_map<const Hittable *, Applied> applied;
+    static std::unordered_map<const Object *, Applied> applied;
 
     for (auto entry = applied.begin(); entry != applied.end();)
     {
         bool live = false;
         for (const auto &object : scene.objects())
         {
-            if (object.get() == entry->first)
+            if (object == entry->first)
             {
                 live = true;
                 break;
@@ -129,31 +129,31 @@ void syncPrefabInstances(Scene &scene)
 
     for (const auto &object : scene.objects())
     {
-        if (object->instanceOf.empty())
+        if (object->instanceOf().empty())
             continue;
-        const Hittable *source = nullptr;
+        const Object *source = nullptr;
         for (const auto &candidate : scene.objects())
         {
-            if (candidate->prefab == object->instanceOf)
+            if (candidate->prefab() == object->instanceOf())
             {
-                source = candidate.get();
+                source = candidate;
                 break;
             }
         }
         if (source == nullptr || std::string(source->kind()) != object->kind())
             continue;
-        std::vector<Hittable *> sourceChildren;
-        std::vector<Hittable *> instanceChildren;
+        std::vector<Object *> sourceChildren;
+        std::vector<Object *> instanceChildren;
         for (const auto &candidate : scene.objects())
         {
-            if (candidate->parentId == source->id)
-                sourceChildren.push_back(candidate.get());
-            else if (candidate->parentId == object->id)
-                instanceChildren.push_back(candidate.get());
+            if (candidate->parentId() == source->id())
+                sourceChildren.push_back(candidate);
+            else if (candidate->parentId() == object->id())
+                instanceChildren.push_back(candidate);
         }
         const std::uint64_t hash = sourceFingerprint(*source, sourceChildren);
-        const auto found = applied.find(object.get());
-        if (found != applied.end() && found->second.id == object->id && found->second.hash == hash)
+        const auto found = applied.find(object);
+        if (found != applied.end() && found->second.id == object->id() && found->second.hash == hash)
             continue;
         copyPrefabFields(*object, *source);
         const size_t count = std::min(sourceChildren.size(), instanceChildren.size());
@@ -164,36 +164,34 @@ void syncPrefabInstances(Scene &scene)
             copyPrefabFields(*instanceChildren[index], *sourceChildren[index]);
             instanceChildren[index]->setLocalPosition(sourceChildren[index]->localPosition());
         }
-        applied[object.get()] = Applied{object->id, hash};
+        applied[object] = Applied{object->id(), hash};
     }
 }
 
-int placePrefabInstance(Scene &scene, int sourceId)
+EntityId placePrefabInstance(Scene &scene, EntityId sourceId)
 {
-    Hittable *source = scene.find(sourceId);
-    if (source == nullptr || source->prefab.empty())
-        return -1;
-    std::vector<const Hittable *> children;
+    Object *source = scene.find(sourceId);
+    if (source == nullptr || source->prefab().empty())
+        return kInvalidEntityId;
+    std::vector<const Object *> children;
     for (const auto &object : scene.objects())
     {
-        if (object->parentId == source->id)
-            children.push_back(object.get());
+        if (object->parentId() == source->id())
+            children.push_back(object);
     }
-    auto root = source->clone();
-    root->prefab.clear();
-    root->instanceOf = source->prefab;
-    root->id = 0;
-    root->parentId = 0;
+    const EntityId rootId = source->clone(scene);
+    Object *root = scene.find(rootId);
+    root->prefab().clear();
+    root->instanceOf() = source->prefab();
+    root->setParentId(kInvalidEntityId);
     root->setLocalPosition(root->localPosition() + Vec3(0.8, 0, 0.8));
-    const int rootId = scene.add(std::move(root));
-    for (const Hittable *child : children)
+    for (const Object *child : children)
     {
-        auto copy = child->clone();
-        copy->id = 0;
-        copy->parentId = rootId;
-        copy->prefab.clear();
-        copy->instanceOf.clear();
-        scene.add(std::move(copy));
+        const EntityId childId = child->clone(scene);
+        Object *copy = scene.find(childId);
+        copy->setParentId(rootId);
+        copy->prefab().clear();
+        copy->instanceOf().clear();
     }
     return rootId;
 }

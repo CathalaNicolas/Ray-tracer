@@ -8,12 +8,12 @@
 #include <string>
 #include <vector>
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
+#if defined(_MSC_VER)
+#pragma warning(push, 0)
 #endif
-#include <windows.h>
-#include <mmsystem.h>
+#include <miniaudio.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
 #endif
 
 namespace
@@ -110,52 +110,102 @@ const std::vector<std::uint8_t> &clipFor(GameSound sound)
     return beep;
 }
 
+const char *clipName(GameSound sound)
+{
+    if (sound == GameSound::Pickup)
+        return "game://pickup";
+    if (sound == GameSound::Win)
+        return "game://win";
+    return "game://beep";
+}
+
 double gVolume = 1;
 Vec3 gListener;
-std::vector<std::uint8_t> gPlayed;
 
-std::vector<std::uint8_t> scaled(const std::vector<std::uint8_t> &wav, double volume)
+struct Audio
 {
-    if (wav.size() < 44 || volume >= 0.999)
-        return wav;
-    std::vector<std::uint8_t> out = wav;
-    const double gain = volume < 0 ? 0 : volume;
-    for (size_t offset = 44; offset + 1 < out.size(); offset += 2)
+    ma_engine engine{};
+    bool engineOk = false;
+    ma_sound music{};
+    bool musicOk = false;
+    ma_sound oneshot{};
+    bool oneshotOk = false;
+    bool clipsRegistered = false;
+
+    ~Audio()
     {
-        int sample = static_cast<int>(static_cast<std::int16_t>(out[offset] | (out[offset + 1] << 8)));
-        sample = static_cast<int>(sample * gain);
-        if (sample > 32767)
-            sample = 32767;
-        if (sample < -32767)
-            sample = -32767;
-        const auto bits = static_cast<std::uint16_t>(static_cast<std::int16_t>(sample));
-        out[offset] = static_cast<std::uint8_t>(bits & 0xff);
-        out[offset + 1] = static_cast<std::uint8_t>((bits >> 8) & 0xff);
+        releaseOneshot();
+        releaseMusic();
+        if (engineOk)
+        {
+            ma_engine_uninit(&engine);
+            engineOk = false;
+        }
     }
-    return out;
-}
 
-}
+    bool ensureEngine()
+    {
+        if (engineOk)
+            return true;
+        if (ma_engine_init(nullptr, &engine) != MA_SUCCESS)
+            return false;
+        engineOk = true;
+        registerClips();
+        return true;
+    }
 
-bool gMusic = false;
+    void registerClips()
+    {
+        if (clipsRegistered)
+            return;
+        ma_resource_manager *resources = ma_engine_get_resource_manager(&engine);
+        if (resources == nullptr)
+            return;
+        const GameSound kinds[] = {GameSound::Beep, GameSound::Pickup, GameSound::Win};
+        for (GameSound kind : kinds)
+        {
+            const std::vector<std::uint8_t> &wav = clipFor(kind);
+            ma_resource_manager_register_encoded_data(resources, clipName(kind), wav.data(), wav.size());
+        }
+        clipsRegistered = true;
+    }
 
-void applyMusicVolume()
+    void releaseOneshot()
+    {
+        if (!oneshotOk)
+            return;
+        ma_sound_uninit(&oneshot);
+        oneshotOk = false;
+    }
+
+    void releaseMusic()
+    {
+        if (!musicOk)
+            return;
+        ma_sound_uninit(&music);
+        musicOk = false;
+    }
+
+    void applyMusicVolume()
+    {
+        if (!musicOk)
+            return;
+        ma_sound_set_volume(&music, static_cast<float>(gVolume));
+    }
+};
+
+Audio &audio()
 {
-#if defined(_WIN32)
-    if (!gMusic)
-        return;
-    const int level = static_cast<int>(gVolume * 1000.0);
-    const std::string command = "setaudio raymusic volume to " + std::to_string(level);
-    ::mciSendStringA(command.c_str(), nullptr, 0, nullptr);
-#else
-    (void)0;
-#endif
+    static Audio instance;
+    return instance;
+}
+
 }
 
 void setMasterVolume(double volume)
 {
     gVolume = volume < 0 ? 0 : (volume > 1 ? 1 : volume);
-    applyMusicVolume();
+    audio().applyMusicVolume();
 }
 
 double masterVolume()
@@ -185,42 +235,36 @@ void playGameSound(GameSound sound, const Vec3 &source)
 {
     const double distance = length(source - gListener);
     const double gain = gVolume * soundDistanceFade(distance);
-#if defined(_WIN32)
     if (gain <= 0.0001)
         return;
-    // Stop first so the previous buffer can be freed before gPlayed reallocates.
-    ::PlaySoundA(nullptr, nullptr, 0);
-    gPlayed = scaled(clipFor(sound), gain);
-    ::PlaySoundA(reinterpret_cast<LPCSTR>(gPlayed.data()), nullptr, SND_ASYNC | SND_MEMORY | SND_NODEFAULT);
-#else
-    (void)sound;
-    (void)gain;
-#endif
+    Audio &device = audio();
+    if (!device.ensureEngine())
+        return;
+    device.releaseOneshot();
+    const ma_uint32 flags = MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_NO_SPATIALIZATION;
+    if (ma_sound_init_from_file(&device.engine, clipName(sound), flags, nullptr, nullptr, &device.oneshot) != MA_SUCCESS)
+        return;
+    device.oneshotOk = true;
+    ma_sound_set_volume(&device.oneshot, static_cast<float>(gain));
+    ma_sound_start(&device.oneshot);
 }
 
 void startMusic()
 {
-#if defined(_WIN32)
     stopMusic();
-    if (::mciSendStringA("open \"assets/music.wav\" type waveaudio alias raymusic", nullptr, 0, nullptr) != 0)
+    Audio &device = audio();
+    if (!device.ensureEngine())
         return;
-    gMusic = true;
-    applyMusicVolume();
-    ::mciSendStringA("play raymusic repeat", nullptr, 0, nullptr);
-#else
-    (void)0;
-#endif
+    const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION;
+    if (ma_sound_init_from_file(&device.engine, "assets/music.wav", flags, nullptr, nullptr, &device.music) != MA_SUCCESS)
+        return;
+    device.musicOk = true;
+    ma_sound_set_looping(&device.music, MA_TRUE);
+    device.applyMusicVolume();
+    ma_sound_start(&device.music);
 }
 
 void stopMusic()
 {
-#if defined(_WIN32)
-    if (!gMusic)
-        return;
-    ::mciSendStringA("stop raymusic", nullptr, 0, nullptr);
-    ::mciSendStringA("close raymusic", nullptr, 0, nullptr);
-    gMusic = false;
-#else
-    (void)0;
-#endif
+    audio().releaseMusic();
 }

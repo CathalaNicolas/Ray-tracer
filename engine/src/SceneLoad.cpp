@@ -4,6 +4,7 @@
 #include "Mesh.hpp"
 #include "Plane.hpp"
 #include "Sphere.hpp"
+#include "Terrain.hpp"
 
 #include <cctype>
 #include <cstdlib>
@@ -48,6 +49,21 @@ bool readDoubleAt(const std::string &text, size_t &index, double &value)
     if (end == text.c_str() + index)
         return false;
     index = static_cast<size_t>(end - text.c_str());
+    return true;
+}
+
+bool readEntityIdAt(const std::string &text, size_t &index, EntityId &value)
+{
+    while (index < text.size() && std::isspace(static_cast<unsigned char>(text[index])))
+        ++index;
+    if (index >= text.size() || !std::isdigit(static_cast<unsigned char>(text[index])))
+        return false;
+    char *end = nullptr;
+    const unsigned long long parsed = std::strtoull(text.c_str() + index, &end, 10);
+    if (end == text.c_str() + index)
+        return false;
+    index = static_cast<size_t>(end - text.c_str());
+    value = static_cast<EntityId>(parsed);
     return true;
 }
 
@@ -98,7 +114,7 @@ bool parseTail(const std::string &tail, SurfaceExtras &extras, std::string &erro
                 return false;
             }
         }
-        else if (word == "obj" || word == "fbx")
+        else if (word == "obj" || word == "fbx" || word == "rtt")
         {
             if (!scene_parse::readQuoted(tail, index, extras.objectFile))
             {
@@ -226,13 +242,13 @@ bool parseTail(const std::string &tail, SurfaceExtras &extras, std::string &erro
         }
         else if (word == "parent")
         {
-            double parent = 0;
-            if (!readDoubleAt(tail, index, parent))
+            EntityId parent = kInvalidEntityId;
+            if (!readEntityIdAt(tail, index, parent))
             {
                 error = "parent needs an id";
                 return false;
             }
-            extras.parentId = static_cast<int>(parent);
+            extras.parentId = parent;
         }
         else if (word == "prefab")
         {
@@ -267,6 +283,25 @@ bool parseTail(const std::string &tail, SurfaceExtras &extras, std::string &erro
                 error = "every needs a number of seconds";
                 return false;
             }
+        }
+        else if (word == "id")
+        {
+            EntityId id = kInvalidEntityId;
+            if (!readEntityIdAt(tail, index, id) || id == kInvalidEntityId)
+            {
+                error = "id needs a positive integer";
+                return false;
+            }
+            extras.id = id;
+        }
+        else if (word == "scale")
+        {
+            if (!readDoubleAt(tail, index, extras.scale))
+            {
+                error = "scale needs a number";
+                return false;
+            }
+            extras.hasScale = true;
         }
         else
         {
@@ -374,13 +409,22 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
         if (command == "raytracer-scene")
         {
             int version = 0;
-            if (!(head >> version) || version != 1)
+            if (!(head >> version) || (version != 1 && version != 2))
                 return fail("unsupported scene version");
             sawHeader = true;
             continue;
         }
         if (!sawHeader)
             return fail("missing raytracer-scene header");
+
+        if (command == "next_id")
+        {
+            EntityId next = 0;
+            if (!(head >> next) || next == kInvalidEntityId)
+                return fail("next_id needs a positive integer");
+            loaded.setNextId(next);
+            continue;
+        }
 
         if (command == "ambient")
         {
@@ -450,6 +494,55 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
             loaded.shots().push_back(shot);
             continue;
         }
+        if (command == "map")
+        {
+            std::uint64_t id = 0;
+            if (!(head >> id))
+                return fail("map needs an id");
+            std::string restLine;
+            std::getline(head, restLine);
+            size_t index = 0;
+            std::string name;
+            std::string kindName;
+            if (!scene_parse::readQuoted(restLine, index, name) || !scene_parse::readWord(restLine, index, kindName))
+                return fail("map needs a quoted name and kind");
+            MapKind kind = MapKind::Continent;
+            if (!mapKindFromName(kindName, kind))
+                return fail("map kind must be continent or dungeon");
+            double tileSize = kTerrainTileSize;
+            double tilesX = 1;
+            double tilesZ = 1;
+            if (!scene_parse::readDoubleAt(restLine, index, tileSize) || !scene_parse::readDoubleAt(restLine, index, tilesX)
+                || !scene_parse::readDoubleAt(restLine, index, tilesZ) || tileSize <= 0 || tilesX < 1 || tilesZ < 1)
+                return fail("map needs tile size and tile counts");
+            loaded.map().id = id;
+            loaded.map().name = name;
+            loaded.map().kind = kind;
+            loaded.map().tileSize = static_cast<float>(tileSize);
+            loaded.map().tilesX = static_cast<int>(tilesX);
+            loaded.map().tilesZ = static_cast<int>(tilesZ);
+            continue;
+        }
+        if (command == "liquid")
+        {
+            std::string kindName;
+            if (!(head >> kindName))
+                return fail("liquid needs a kind");
+            LiquidKind kind = LiquidKind::Water;
+            if (!liquidKindFromName(kindName, kind))
+                return fail("liquid kind must be water or lava");
+            double x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 0, z1 = 0, surface = 0;
+            if (!readNumbers(head, x0, y0, z0, x1, y1, z1, surface))
+                return fail("liquid needs bounds and a surface");
+            LiquidVolume volume;
+            volume.kind = kind;
+            volume.boundsMin = Vec3(x0, y0, z0);
+            volume.boundsMax = Vec3(x1, y1, z1);
+            volume.surfaceY = static_cast<float>(surface);
+            loaded.liquids().push_back(volume);
+            continue;
+        }
+
         if (command == "environment")
         {
             size_t index = line.find(command);
@@ -464,7 +557,7 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
         size_t index = line.find(command);
         index = index == std::string::npos ? line.size() : index + command.size();
         std::string name;
-        if (command == "sphere" || command == "plane" || command == "mesh" || command == "light")
+        if (command == "sphere" || command == "plane" || command == "mesh" || command == "terrain" || command == "light")
         {
             if (!scene_parse::readQuoted(line, index, name))
                 return fail("expected a quoted name");
@@ -489,19 +582,21 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
                 return fail(tailError);
             Material material = materialFrom(red, green, blue, ambient, diffuse, specular, shininess, reflectivity);
             applySurface(material, extras);
-            auto sphere = std::make_unique<Sphere>(Vec3(cx, cy, cz), radius, material);
-            sphere->name = name;
+            Object *sphere = loaded.addSphere(Vec3(cx, cy, cz), radius, material, extras.id);
+            sphere->name() = name;
             sphere->setTag(extras.tag);
             if (extras.hasMotion)
-                sphere->motion = extras.motion;
+                sphere->motion() = extras.motion;
             if (extras.hasAction)
-                sphere->action = extras.action;
-            sphere->spawnEvery = extras.spawnEvery;
-            sphere->parentId = extras.parentId;
-            sphere->prefab = extras.prefab;
-            sphere->instanceOf = extras.instanceOf;
-            sphere->layer = extras.layer;
-            loaded.add(std::move(sphere));
+                sphere->action() = extras.action;
+            sphere->spawnEvery() = extras.spawnEvery;
+            sphere->setParentId(extras.parentId);
+            sphere->prefab() = extras.prefab;
+            sphere->instanceOf() = extras.instanceOf;
+            sphere->layer() = extras.layer;
+            sphere->setLocalRotation(extras.rotation);
+            if (extras.hasScale)
+                sphere->setLocalScale(extras.scale);
             continue;
         }
         if (command == "plane")
@@ -518,21 +613,23 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
                 return fail(tailError);
             Material material = materialFrom(red, green, blue, ambient, diffuse, specular, shininess, reflectivity);
             applySurface(material, extras);
-            auto plane = std::make_unique<Plane>(Vec3(px, py, pz), Vec3(nx, ny, nz), material);
-            plane->name = name;
+            Object *plane = loaded.addPlane(Vec3(px, py, pz), Vec3(nx, ny, nz), material, extras.id);
+            plane->name() = name;
             plane->setTag(extras.tag);
             if (extras.hasMotion)
-                plane->motion = extras.motion;
+                plane->motion() = extras.motion;
             if (extras.hasAction)
-                plane->action = extras.action;
-            plane->spawnEvery = extras.spawnEvery;
+                plane->action() = extras.action;
+            plane->spawnEvery() = extras.spawnEvery;
             if (extras.checker)
                 plane->setChecker(extras.checkerAlbedo, extras.checkerScale);
-            plane->parentId = extras.parentId;
-            plane->prefab = extras.prefab;
-            plane->instanceOf = extras.instanceOf;
-            plane->layer = extras.layer;
-            loaded.add(std::move(plane));
+            plane->setParentId(extras.parentId);
+            plane->prefab() = extras.prefab;
+            plane->instanceOf() = extras.instanceOf;
+            plane->layer() = extras.layer;
+            plane->setLocalRotation(extras.rotation);
+            if (extras.hasScale)
+                plane->setLocalScale(extras.scale);
             continue;
         }
         if (command == "mesh")
@@ -549,7 +646,7 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
                 return fail(tailError);
             if (extras.objectFile.empty())
                 return fail("mesh needs an obj path");
-            auto mesh = std::make_unique<Mesh>();
+            Object *mesh = loaded.addMesh(extras.id);
             std::string meshError;
             if (!mesh->load(std::filesystem::u8path(extras.objectFile), meshError))
                 return fail(meshError);
@@ -559,18 +656,54 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
             mesh->setPosition(Vec3(px, py, pz));
             mesh->setScale(scale);
             mesh->setRotation(extras.rotation);
-            mesh->name = name;
+            mesh->name() = name;
             mesh->setTag(extras.tag);
             if (extras.hasMotion)
-                mesh->motion = extras.motion;
+                mesh->motion() = extras.motion;
             if (extras.hasAction)
-                mesh->action = extras.action;
-            mesh->spawnEvery = extras.spawnEvery;
-            mesh->parentId = extras.parentId;
-            mesh->prefab = extras.prefab;
-            mesh->instanceOf = extras.instanceOf;
-            mesh->layer = extras.layer;
-            loaded.add(std::move(mesh));
+                mesh->action() = extras.action;
+            mesh->spawnEvery() = extras.spawnEvery;
+            mesh->setParentId(extras.parentId);
+            mesh->prefab() = extras.prefab;
+            mesh->instanceOf() = extras.instanceOf;
+            mesh->layer() = extras.layer;
+            continue;
+        }
+        if (command == "terrain")
+        {
+            double px = 0, py = 0, pz = 0, scale = 1;
+            double red = 0, green = 0, blue = 0, ambient = 0, diffuse = 0, specular = 0, shininess = 0, reflectivity = 0;
+            if (!readNumbers(rest, px, py, pz, scale, red, green, blue, ambient, diffuse, specular, shininess, reflectivity))
+                return fail("terrain needs a position, scale, and material");
+            std::string tail;
+            std::getline(rest, tail);
+            scene_parse::SurfaceExtras extras;
+            std::string tailError;
+            if (!scene_parse::parseTail(tail, extras, tailError))
+                return fail(tailError);
+            if (extras.objectFile.empty())
+                return fail("terrain needs an rtt path");
+            Object *terrain = loaded.addTerrain(extras.id);
+            std::string terrainError;
+            if (!terrain->loadTerrain(std::filesystem::u8path(extras.objectFile), terrainError))
+                return fail(terrainError);
+            Material material = materialFrom(red, green, blue, ambient, diffuse, specular, shininess, reflectivity);
+            applySurface(material, extras);
+            terrain->setMaterial(material);
+            terrain->setPosition(Vec3(px, py, pz));
+            terrain->setScale(scale);
+            terrain->setRotation(extras.rotation);
+            terrain->name() = name;
+            terrain->setTag(extras.tag);
+            if (extras.hasMotion)
+                terrain->motion() = extras.motion;
+            if (extras.hasAction)
+                terrain->action() = extras.action;
+            terrain->spawnEvery() = extras.spawnEvery;
+            terrain->setParentId(extras.parentId);
+            terrain->prefab() = extras.prefab;
+            terrain->instanceOf() = extras.instanceOf;
+            terrain->layer() = extras.layer;
             continue;
         }
 
@@ -598,7 +731,10 @@ bool loadScene(const std::filesystem::path &path, Scene &scene, CameraSetup &cam
         return false;
     }
 
+    const EntityId keepPrefix = scene.sessionPrefix();
+    const EntityId keepNext = scene.nextId();
     scene = std::move(loaded);
+    scene.retainSessionIds(keepPrefix, keepNext);
     camera = loadedCamera;
     return true;
 }

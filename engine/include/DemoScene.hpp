@@ -23,33 +23,31 @@ inline void addDemoTree(Scene &scene)
 
     const Vec3 root(-2.4, 0.0, -0.15);
     std::string error;
-    auto trunk = std::make_unique<Mesh>();
+    Object *trunk = scene.addMesh();
     if (!trunk->load("assets/tree-trunk.obj", error))
     {
         std::cerr << error << "\n";
         return;
     }
-    trunk->name = "Tree trunk";
-    trunk->tag = "solid";
+    trunk->name() = "Tree trunk";
+    trunk->setTag("solid");
     trunk->setMaterial(bark);
     trunk->setPosition(root);
     trunk->setScale(1.2);
     trunk->setRotation(Vec3(0, 18, 0));
-    scene.add(std::move(trunk));
 
-    auto crown = std::make_unique<Mesh>();
+    Object *crown = scene.addMesh();
     if (!crown->load("assets/tree-crown.obj", error))
     {
         std::cerr << error << "\n";
         return;
     }
-    crown->name = "Tree crown";
-    crown->tag = "solid";
+    crown->name() = "Tree crown";
+    crown->setTag("solid");
     crown->setMaterial(leaves);
     crown->setPosition(root + Vec3(0.0, 0.86, 0.0));
     crown->setScale(1.15);
     crown->setRotation(Vec3(0, 18, 0));
-    scene.add(std::move(crown));
 }
 
 inline Scene createDemoScene()
@@ -66,55 +64,48 @@ inline Scene createDemoScene()
     floor.shininess = 48;
     floor.reflectivity = 0.14;
 
-    auto ground = std::make_unique<Plane>(Vec3(0, 0, 0), Vec3(0, 1, 0), floor);
-    ground->name = "Ground";
-    ground->tag = "solid";
+    Object *ground = scene.addPlane(Vec3(0, 0, 0), Vec3(0, 1, 0), floor);
+    ground->name() = "Ground";
+    ground->setTag("solid");
     ground->setChecker(Vec3(0.16, 0.16, 0.18), 1.15);
-    scene.add(std::move(ground));
 
-    auto red = std::make_unique<Sphere>(
+    Object *red = scene.addSphere(
         Vec3(-1.15, 1.0, 0.15),
         1.0,
         Material::makeDiffuse(Vec3(0.78, 0.12, 0.1)));
-    red->name = "Red sphere";
-    scene.add(std::move(red));
+    red->name() = "Red sphere";
 
-    auto mirror = std::make_unique<Sphere>(
+    Object *mirror = scene.addSphere(
         Vec3(1.3, 0.75, -0.35),
         0.75,
         Material::makeMetal(Vec3(0.93, 0.93, 0.96), 0.86));
-    mirror->name = "Mirror sphere";
-    scene.add(std::move(mirror));
+    mirror->name() = "Mirror sphere";
 
     Material goldMaterial = Material::makeMetal(Vec3(0.9, 0.72, 0.28), 0.42);
     goldMaterial.roughness = 0.34;
-    auto gold = std::make_unique<Sphere>(Vec3(0.2, 0.4, 1.35), 0.4, goldMaterial);
-    gold->name = "Gold sphere";
-    scene.add(std::move(gold));
+    Object *gold = scene.addSphere(Vec3(0.2, 0.4, 1.35), 0.4, goldMaterial);
+    gold->name() = "Gold sphere";
 
     Material lampMaterial = Material::makeDiffuse(Vec3(1.0, 0.62, 0.28));
     lampMaterial.ambient = 0;
     lampMaterial.diffuse = 0;
     lampMaterial.specular = 0;
     lampMaterial.emission = 8;
-    auto lamp = std::make_unique<Sphere>(Vec3(1.9, 1.35, 0.35), 0.14, lampMaterial);
-    lamp->name = "Lamp";
-    scene.add(std::move(lamp));
+    Object *lamp = scene.addSphere(Vec3(1.9, 1.35, 0.35), 0.14, lampMaterial);
+    lamp->name() = "Lamp";
 
-    auto glass = std::make_unique<Sphere>(
+    Object *glass = scene.addSphere(
         Vec3(-0.05, 0.42, 2.05),
         0.38,
         Material::makeGlass(Vec3(0.92, 0.96, 1.0), 1.5));
-    glass->name = "Glass sphere";
-    scene.add(std::move(glass));
+    glass->name() = "Glass sphere";
 
-    auto player = std::make_unique<Sphere>(
+    Object *player = scene.addSphere(
         Vec3(0, 0.5, 2.2),
         0.35,
         Material::makeDiffuse(Vec3(0.2, 0.45, 0.95)));
-    player->name = "Player";
-    player->tag = "player";
-    scene.add(std::move(player));
+    player->name() = "Player";
+    player->setTag("player");
 
     Material pickupMaterial = Material::makeDiffuse(Vec3(0.95, 0.85, 0.2));
     const Vec3 pickupCenters[] = {
@@ -124,90 +115,87 @@ inline Scene createDemoScene()
     };
     for (int index = 0; index < 3; ++index)
     {
-        auto pickup = std::make_unique<Sphere>(pickupCenters[index], 0.22, pickupMaterial);
-        pickup->name = "Pickup " + std::to_string(index + 1);
-        pickup->tag = "pickup";
-        scene.add(std::move(pickup));
+        Object *pickup = scene.addSphere(pickupCenters[index], 0.22, pickupMaterial);
+        pickup->name() = "Pickup " + std::to_string(index + 1);
+        pickup->setTag("pickup");
     }
 
     Material goalMaterial = Material::makeDiffuse(Vec3(0.3, 0.9, 0.6));
     goalMaterial.transmission = 0;
-    auto goal = std::make_unique<Sphere>(Vec3(2.2, 0.4, -1.2), 0.45, goalMaterial);
-    goal->name = "Goal";
-    goal->tag = "goal";
-    scene.add(std::move(goal));
+    Object *goal = scene.addSphere(Vec3(2.2, 0.4, -1.2), 0.45, goalMaterial);
+    goal->name() = "Goal";
+    goal->setTag("goal");
 
-    auto hazard = std::make_unique<Sphere>(
+    Object *hazard = scene.addSphere(
         Vec3(-1.7, 0.3, 1.5),
         0.32,
         Material::makeDiffuse(Vec3(0.55, 0.05, 0.08)));
-    hazard->name = "Hazard";
-    hazard->tag = "hazard";
-    scene.add(std::move(hazard));
+    hazard->name() = "Hazard";
+    hazard->setTag("hazard");
 
-    auto door = std::make_unique<Mesh>();
+    Object *door = scene.addMesh();
     std::string doorError;
     if (door->load("assets/door.obj", doorError))
     {
-        door->name = "Door";
-        door->tag = "solid";
-        door->layer = 1;
+        door->name() = "Door";
+        door->setTag("solid");
+        door->layer() = 1;
         door->setPosition(Vec3(1.35, 0, 0.95));
-        scene.add(std::move(door));
     }
     else
+    {
+        scene.remove(door->id());
         std::cerr << doorError << "\n";
+    }
 
-    auto lever = std::make_unique<Sphere>(
+    Object *lever = scene.addSphere(
         Vec3(1.8, 0.28, 1.7),
         0.22,
         Material::makeDiffuse(Vec3(0.55, 0.25, 0.85)));
-    lever->name = "Switch";
-    lever->tag = "use";
-    lever->action.target = "Door";
-    lever->action.move = Vec3(0, 1.6, 0);
-    scene.add(std::move(lever));
+    lever->name() = "Switch";
+    lever->setTag("use");
+    lever->action().target = "Door";
+    lever->action().move = Vec3(0, 1.6, 0);
 
-    auto stepStone = std::make_unique<Sphere>(
+    Object *stepStone = scene.addSphere(
         Vec3(-1.15, 0.12, 2.55),
         0.12,
         Material::makeDiffuse(Vec3(0.45, 0.45, 0.48)));
-    stepStone->name = "Step";
-    stepStone->tag = "solid";
-    scene.add(std::move(stepStone));
+    stepStone->name() = "Step";
+    stepStone->setTag("solid");
 
     addDemoTree(scene);
 
-    auto platform = std::make_unique<Mesh>();
+    Object *platform = scene.addMesh();
     std::string platformError;
     if (platform->load("assets/platform.obj", platformError))
     {
-        platform->name = "Platform";
-        platform->tag = "platform";
+        platform->name() = "Platform";
+        platform->setTag("platform");
         platform->setPosition(Vec3(0.15, 0, 0.35));
-        platform->motion.move = Vec3(1.6, 0, 0);
-        platform->motion.period = 4;
-        scene.add(std::move(platform));
+        platform->motion().move = Vec3(1.6, 0, 0);
+        platform->motion().period = 4;
     }
     else
+    {
+        scene.remove(platform->id());
         std::cerr << platformError << "\n";
+    }
 
-    auto spawn = std::make_unique<Sphere>(
+    Object *spawn = scene.addSphere(
         Vec3(0.45, 0.5, 2.55),
         0.08,
         Material::makeDiffuse(Vec3(0.35, 0.75, 0.85)));
-    spawn->name = "Spawn";
-    spawn->tag = "spawn";
-    scene.add(std::move(spawn));
+    spawn->name() = "Spawn";
+    spawn->setTag("spawn");
 
-    auto spawner = std::make_unique<Sphere>(
+    Object *spawner = scene.addSphere(
         Vec3(-0.85, 0.0, 2.85),
         0.12,
         Material::makeDiffuse(Vec3(0.95, 0.45, 0.15)));
-    spawner->name = "Spawner";
-    spawner->tag = "spawner";
-    spawner->spawnEvery = 2.5;
-    scene.add(std::move(spawner));
+    spawner->name() = "Spawner";
+    spawner->setTag("spawner");
+    spawner->spawnEvery() = 2.5;
 
     scene.addLight(PointLight(Vec3(3.2, 7.5, 2.4), Vec3(1, 0.97, 0.92), 1.6, 0.012));
     scene.lights().back().name = "Key";
@@ -234,34 +222,30 @@ inline Scene createEastScene()
     floor.shininess = 48;
     floor.reflectivity = 0.14;
 
-    auto ground = std::make_unique<Plane>(Vec3(0, 0, 0), Vec3(0, 1, 0), floor);
-    ground->name = "Ground";
-    ground->tag = "solid";
+    Object *ground = scene.addPlane(Vec3(0, 0, 0), Vec3(0, 1, 0), floor);
+    ground->name() = "Ground";
+    ground->setTag("solid");
     ground->setChecker(Vec3(0.16, 0.16, 0.18), 0.7);
-    scene.add(std::move(ground));
 
-    auto player = std::make_unique<Sphere>(
+    Object *player = scene.addSphere(
         Vec3(0, 0.5, 1.6),
         0.35,
         Material::makeDiffuse(Vec3(0.2, 0.45, 0.95)));
-    player->name = "Player";
-    player->tag = "player";
-    scene.add(std::move(player));
+    player->name() = "Player";
+    player->setTag("player");
 
-    auto pickup = std::make_unique<Sphere>(
+    Object *pickup = scene.addSphere(
         Vec3(-1.2, 0.22, 0.4),
         0.22,
         Material::makeDiffuse(Vec3(0.95, 0.85, 0.2)));
-    pickup->name = "Pickup";
-    pickup->tag = "pickup";
-    scene.add(std::move(pickup));
+    pickup->name() = "Pickup";
+    pickup->setTag("pickup");
 
     Material goalMaterial = Material::makeDiffuse(Vec3(0.3, 0.9, 0.6));
     goalMaterial.transmission = 0;
-    auto goal = std::make_unique<Sphere>(Vec3(1.5, 0.45, -0.8), 0.45, goalMaterial);
-    goal->name = "Goal";
-    goal->tag = "goal";
-    scene.add(std::move(goal));
+    Object *goal = scene.addSphere(Vec3(1.5, 0.45, -0.8), 0.45, goalMaterial);
+    goal->name() = "Goal";
+    goal->setTag("goal");
     return scene;
 }
 

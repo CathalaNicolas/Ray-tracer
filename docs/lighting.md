@@ -12,11 +12,11 @@ Lights are `PointLight` values on the scene (`engine/include/Light.hpp`). The ty
 
 The demo uses a key light with radius `0.45` and a dimmer fill aimed back toward the room as a mild spot (outer half-angle 38 degrees, inner 18). Both are saved with the scene. The file writes `radius` and `directional` only when they are set. A spot adds `spot x y z outer inner` and omits that tail when the outer angle is 0. The scene file stays version 1. `spot` is a light-line keyword. An object line that contains it is still an unknown option.
 
-The GPU keeps at most 8 lights. Past that, `gpuSceneLimits` warns and the extra lights are skipped. A point light, including the Lamp, writes six 90° faces into its 1024 shadow layer, three across and two up. A mesh on any side of the light stays on one face, so a door that straddles the old seam no longer smears across the floor. The pass draws back faces, and the shader averages 4 taps inside that face. The compare bias is `max(0.004, 0.012*(1-facing))`. A directional light still uses one orthographic map.
+The GPU keeps at most 8 lights. When the scene has 8 or fewer point lights plus emissive objects, they upload in file order. Past that, `rankGpuLights` (`engine/src/GpuLights.cpp`) keeps directional lights first, then the highest `intensity / (1 + falloff * distance²)` to the camera, and `gpuSceneLimits` still warns. A point light, including the Lamp, writes six 90° faces into its shadow layer, three across and two up. Layer resolution is `shadow_map` (default 1024). A mesh on any side of the light stays on one face, so a door that straddles the old seam no longer smears across the floor. The pass draws back faces, and the shader averages 4 taps inside that face. The compare bias is `max(0.004, 0.012*(1-facing))`. A directional light still uses one orthographic map.
 
 ## Emission
 
-`Material::emission` brightens that surface and shows up in reflections. It also becomes a point light at the object center while fewer than 8 lights are already in use. The color is the albedo, the intensity is the emission, and the falloff is 0.2. The surface does not light itself. Sphere blockers are tested, skipping the emitter. Mesh shadow maps block these lights the same way they block a real point light. A glowing mesh is omitted from its own shadow map so the light can leave the surface. The lamp sphere in the demo is this light plus the real key light.
+`Material::emission` brightens that surface and shows up in reflections. It also becomes a point light at the object center while fewer than 8 lights are already in use. The color is the albedo, the intensity is the emission, and the falloff is 0.2. The surface does not light itself. `uLightAux[i].w` stores the compact GPU id for that emitter (`compactIdOf`), matching `hit.id`, so the three shader loops that skip self-lighting work. Sphere blockers are tested, skipping the emitter. Mesh shadow maps block these lights the same way they block a real point light. A glowing mesh is omitted from its own shadow map so the light can leave the surface. The lamp sphere in the demo is this light plus the real key light.
 
 Settings → Mirror bounces is on by default. Off writes `mirrors 0` and the next frame uploads `uMirrorCount` 0, so no sphere bounce runs. On restores the count. A settings file with no `mirrors` line leaves the bounce on.
 
@@ -27,5 +27,5 @@ A sphere with reflectivity above 0.35 and transmission 0 bounces each light once
 - A third mirror in one bounce path, or a second bounce that uses mirror spheres past the first four.
 - Light cookies and colored shadows.
 - Baked lightmaps.
-- A way to light a scene with more than 8 lights, or to pick the lights that affect a point.
+- A way to light a scene with more than 8 lights per pixel, or a clustered tile list. `rankGpuLights` only chooses which 8 reach the shader.
 - An animated sky, day and night, or any light that moves on its own.

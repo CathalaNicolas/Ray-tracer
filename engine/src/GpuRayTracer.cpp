@@ -65,6 +65,8 @@ bool GpuRayTracer::init()
     glUniform1fFn = loadGl<GlUniform1f>("glUniform1f");
     glActiveTextureFn = loadGl<GlActiveTexture>("glActiveTexture");
     glTexImage3DFn = loadGl<GlTexImage3D>("glTexImage3D");
+    glCompressedTexImage2DFn = loadGl<GlCompressedTexImage2D>("glCompressedTexImage2D");
+    glCompressedTexImage3DFn = loadGl<GlCompressedTexImage3D>("glCompressedTexImage3D");
     glUniform3fFn = loadGl<GlUniform3f>("glUniform3f");
     glUniform4fvFn = loadGl<GlUniform4fv>("glUniform4fv");
     glUniform1ivFn = loadGl<GlUniform1iv>("glUniform1iv");
@@ -82,6 +84,9 @@ bool GpuRayTracer::init()
     glDeleteBuffersFn = loadGl<GlDeleteBuffers>("glDeleteBuffers");
     glEnableVertexAttribArrayFn = loadGl<GlEnableVertexAttribArray>("glEnableVertexAttribArray");
     glVertexAttribPointerFn = loadGl<GlVertexAttribPointer>("glVertexAttribPointer");
+    glVertexAttribDivisorFn = loadGl<GlVertexAttribDivisor>("glVertexAttribDivisor");
+    glDrawArraysInstancedFn = loadGl<GlDrawArraysInstanced>("glDrawArraysInstanced");
+    glDrawElementsInstancedFn = loadGl<GlDrawElementsInstanced>("glDrawElementsInstanced");
     glUniformMatrix4fvFn = loadGl<GlUniformMatrix4fv>("glUniformMatrix4fv");
     glDrawBuffersFn = loadGl<GlDrawBuffers>("glDrawBuffers");
     glFramebufferTextureLayerFn = loadGl<GlFramebufferTextureLayer>("glFramebufferTextureLayer");
@@ -92,7 +97,7 @@ bool GpuRayTracer::init()
     glDeleteRenderbuffersFn = loadGl<GlDeleteRenderbuffers>("glDeleteRenderbuffers");
     glClearBufferfvFn = loadGl<GlClearBufferfv>("glClearBufferfv");
 
-    if (glCreateShaderFn == nullptr || glGenFramebuffersFn == nullptr || glGenVertexArraysFn == nullptr || glTexImage3DFn == nullptr || glActiveTextureFn == nullptr || glGenBuffersFn == nullptr || glUniformMatrix4fvFn == nullptr || glDrawBuffersFn == nullptr || glFramebufferTextureLayerFn == nullptr || glClearBufferfvFn == nullptr)
+    if (glCreateShaderFn == nullptr || glGenFramebuffersFn == nullptr || glGenVertexArraysFn == nullptr || glTexImage3DFn == nullptr || glActiveTextureFn == nullptr || glGenBuffersFn == nullptr || glUniformMatrix4fvFn == nullptr || glDrawBuffersFn == nullptr || glFramebufferTextureLayerFn == nullptr || glClearBufferfvFn == nullptr || glDrawArraysInstancedFn == nullptr || glDrawElementsInstancedFn == nullptr || glVertexAttribDivisorFn == nullptr)
     {
         failure_ = "This OpenGL driver does not expose shader framebuffers";
         return false;
@@ -219,16 +224,35 @@ bool GpuRayTracer::init()
     glGenVertexArraysFn(1, &vao_);
     glGenVertexArraysFn(1, &meshVao_);
     glGenBuffersFn(1, &meshVbo_);
+    glGenBuffersFn(1, &meshEbo_);
+    glGenBuffersFn(1, &meshInstanceVbo_);
     glBindVertexArrayFn(meshVao_);
     glBindBufferFn(GL_ARRAY_BUFFER, meshVbo_);
+    const GLsizei vertexStride = 8 * static_cast<GLsizei>(sizeof(float));
     glEnableVertexAttribArrayFn(0);
-    glVertexAttribPointerFn(0, 3, GL_FLOAT, GL_FALSE, 9 * static_cast<GLsizei>(sizeof(float)), nullptr);
+    glVertexAttribPointerFn(0, 3, GL_FLOAT, GL_FALSE, vertexStride, nullptr);
     glEnableVertexAttribArrayFn(1);
-    glVertexAttribPointerFn(1, 3, GL_FLOAT, GL_FALSE, 9 * static_cast<GLsizei>(sizeof(float)), reinterpret_cast<const void *>(3 * sizeof(float)));
+    glVertexAttribPointerFn(1, 3, GL_FLOAT, GL_FALSE, vertexStride, reinterpret_cast<const void *>(3 * sizeof(float)));
     glEnableVertexAttribArrayFn(2);
-    glVertexAttribPointerFn(2, 2, GL_FLOAT, GL_FALSE, 9 * static_cast<GLsizei>(sizeof(float)), reinterpret_cast<const void *>(6 * sizeof(float)));
+    glVertexAttribPointerFn(2, 2, GL_FLOAT, GL_FALSE, vertexStride, reinterpret_cast<const void *>(6 * sizeof(float)));
+    glBindBufferFn(GL_ELEMENT_ARRAY_BUFFER, meshEbo_);
+    glBindBufferFn(GL_ARRAY_BUFFER, meshInstanceVbo_);
+    const GLsizei instanceStride = 14 * static_cast<GLsizei>(sizeof(float));
     glEnableVertexAttribArrayFn(3);
-    glVertexAttribPointerFn(3, 1, GL_FLOAT, GL_FALSE, 9 * static_cast<GLsizei>(sizeof(float)), reinterpret_cast<const void *>(8 * sizeof(float)));
+    glVertexAttribPointerFn(3, 1, GL_FLOAT, GL_FALSE, instanceStride, nullptr);
+    glVertexAttribDivisorFn(3, 1);
+    glEnableVertexAttribArrayFn(4);
+    glVertexAttribPointerFn(4, 4, GL_FLOAT, GL_FALSE, instanceStride, reinterpret_cast<const void *>(1 * sizeof(float)));
+    glVertexAttribDivisorFn(4, 1);
+    glEnableVertexAttribArrayFn(5);
+    glVertexAttribPointerFn(5, 3, GL_FLOAT, GL_FALSE, instanceStride, reinterpret_cast<const void *>(5 * sizeof(float)));
+    glVertexAttribDivisorFn(5, 1);
+    glEnableVertexAttribArrayFn(6);
+    glVertexAttribPointerFn(6, 3, GL_FLOAT, GL_FALSE, instanceStride, reinterpret_cast<const void *>(8 * sizeof(float)));
+    glVertexAttribDivisorFn(6, 1);
+    glEnableVertexAttribArrayFn(7);
+    glVertexAttribPointerFn(7, 3, GL_FLOAT, GL_FALSE, instanceStride, reinterpret_cast<const void *>(11 * sizeof(float)));
+    glVertexAttribDivisorFn(7, 1);
     glBindVertexArrayFn(0);
     glGenFramebuffersFn(1, &fbo_);
     glGenFramebuffersFn(1, &gbufferFbo_);
@@ -287,6 +311,10 @@ void GpuRayTracer::shutdown()
         glDeleteVertexArraysFn(1, &meshVao_);
     if (meshVbo_ != 0 && glDeleteBuffersFn != nullptr)
         glDeleteBuffersFn(1, &meshVbo_);
+    if (meshEbo_ != 0 && glDeleteBuffersFn != nullptr)
+        glDeleteBuffersFn(1, &meshEbo_);
+    if (meshInstanceVbo_ != 0 && glDeleteBuffersFn != nullptr)
+        glDeleteBuffersFn(1, &meshInstanceVbo_);
     if (gbufferFbo_ != 0 && glDeleteFramebuffersFn != nullptr)
         glDeleteFramebuffersFn(1, &gbufferFbo_);
     if (shadowFbo_ != 0 && glDeleteFramebuffersFn != nullptr)
@@ -297,6 +325,8 @@ void GpuRayTracer::shutdown()
         glDeleteRenderbuffersFn(1, &shadowDepth_);
     meshVao_ = 0;
     meshVbo_ = 0;
+    meshEbo_ = 0;
+    meshInstanceVbo_ = 0;
     gbufferFbo_ = 0;
     shadowFbo_ = 0;
     gbufferDepth_ = 0;

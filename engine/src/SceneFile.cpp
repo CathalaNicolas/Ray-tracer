@@ -1,6 +1,7 @@
 #include "SceneFile.hpp"
 
 #include "SceneWrite.hpp"
+#include "Terrain.hpp"
 
 #include <cmath>
 #include <fstream>
@@ -16,7 +17,8 @@ bool saveScene(const std::filesystem::path &path, const Scene &scene, const Came
     }
 
     out << std::setprecision(17);
-    out << "raytracer-scene 1\n";
+    out << "raytracer-scene 2\n";
+    out << "next_id " << scene.nextId() << '\n';
     out << "ambient " << scene.ambient().x << ' ' << scene.ambient().y << ' ' << scene.ambient().z << '\n';
     out << "background " << scene.horizon().x << ' ' << scene.horizon().y << ' ' << scene.horizon().z << ' '
         << scene.zenith().x << ' ' << scene.zenith().y << ' ' << scene.zenith().z << '\n';
@@ -37,6 +39,16 @@ bool saveScene(const std::filesystem::path &path, const Scene &scene, const Came
     }
     if (!scene.environment().empty())
         out << "environment \"" << scene_write::escapeName(scene.environment()) << "\"\n";
+    out << "map " << scene.map().id << " \"" << scene_write::escapeName(scene.map().name) << "\" "
+        << mapKindName(scene.map().kind) << ' ' << scene.map().tileSize << ' ' << scene.map().tilesX << ' '
+        << scene.map().tilesZ << '\n';
+    for (const LiquidVolume &volume : scene.liquids())
+    {
+        out << "liquid " << liquidKindName(volume.kind) << ' '
+            << volume.boundsMin.x << ' ' << volume.boundsMin.y << ' ' << volume.boundsMin.z << ' '
+            << volume.boundsMax.x << ' ' << volume.boundsMax.y << ' ' << volume.boundsMax.z << ' '
+            << volume.surfaceY << '\n';
+    }
 
     for (const auto &object : scene.objects())
         object->writeScene(out);

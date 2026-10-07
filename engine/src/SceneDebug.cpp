@@ -86,7 +86,7 @@ struct BounceLight
     Vec3 color;
     double intensity = 1;
     double falloff = 0.2;
-    int emitterId = 0;
+    EntityId emitterId = kInvalidEntityId;
     bool directional = false;
     std::string name;
 };
@@ -117,14 +117,14 @@ void gatherBounceLights(const Scene &scene, std::vector<BounceLight> &lights)
         item.color = material.albedo;
         item.intensity = material.emission;
         item.falloff = 0.2;
-        item.emitterId = object->id;
-        item.name = object->name;
+        item.emitterId = object->id();
+        item.name = object->name();
         item.position = object->worldPosition();
         lights.push_back(item);
     }
 }
 
-const char *bounceBlocker(const Scene &scene, const Vec3 &from, const Vec3 &to, int skipId, int skipMirror)
+const char *bounceBlocker(const Scene &scene, const Vec3 &from, const Vec3 &to, EntityId skipId, EntityId skipMirror)
 {
     const Vec3 delta = to - from;
     const double dist = length(delta);
@@ -136,13 +136,13 @@ const char *bounceBlocker(const Scene &scene, const Vec3 &from, const Vec3 &to, 
     const char *name = "";
     for (const auto &object : scene.objects())
     {
-        if (object->id == skipId || object->id == skipMirror)
+        if (object->id() == skipId || object->id() == skipMirror)
             continue;
         HitRecord hit;
         if (object->intersect(ray, 1e-4, nearest, hit))
         {
             nearest = hit.t;
-            name = object->name.c_str();
+            name = object->name().c_str();
         }
     }
     return name;
@@ -160,9 +160,9 @@ void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<Bounce
     const Plane *floor = nullptr;
     for (const auto &object : scene.objects())
     {
-        if (const auto *plane = dynamic_cast<const Plane *>(object.get()))
+        if (object->isPlane())
         {
-            floor = plane;
+            floor = object;
             break;
         }
     }
@@ -170,8 +170,8 @@ void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<Bounce
     int mirrors = 0;
     for (const auto &object : scene.objects())
     {
-        const auto *sphere = dynamic_cast<const Sphere *>(object.get());
-        if (sphere == nullptr)
+        const auto *sphere = object;
+        if (!sphere->isSphere())
             continue;
         const Material material = sphere->material();
         if (material.reflectivity <= 0.35 || material.transmission > 0.001)
@@ -181,7 +181,7 @@ void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<Bounce
         ++mirrors;
         const Vec3 center = sphere->center();
         const double radius = sphere->worldRadius();
-        out << "mirror \"" << sphere->name << "\" id " << sphere->id
+        out << "mirror \"" << sphere->name() << "\" id " << sphere->id()
             << " center " << vecText(center) << " radius " << radius
             << " reflect " << material.reflectivity
             << " albedo " << vecText(material.albedo) << "\n";
@@ -192,7 +192,7 @@ void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<Bounce
             Vec3 normal;
             Vec3 albedo;
             double diffuse = 1;
-            int id = 0;
+            EntityId id = kInvalidEntityId;
         };
         std::vector<Receiver> receivers;
         if (floor != nullptr)
@@ -205,12 +205,12 @@ void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<Bounce
                 for (double z : zs)
                 {
                     Receiver receiver;
-                    receiver.name = floor->name;
+                    receiver.name = floor->name();
                     receiver.point = Vec3(x, y, z) + normal * 0.001;
                     receiver.normal = normal;
                     receiver.albedo = floor->material().albedo;
                     receiver.diffuse = floor->material().diffuse;
-                    receiver.id = floor->id;
+                    receiver.id = floor->id();
                     receivers.push_back(receiver);
                 }
         }
@@ -219,26 +219,26 @@ void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<Bounce
         {
             if (sphereReceivers >= 6)
                 break;
-            const auto *target = dynamic_cast<const Sphere *>(other.get());
-            if (target == nullptr || target->id == sphere->id)
+            const auto *target = other;
+            if (!target->isSphere() || target->id() == sphere->id())
                 continue;
             const Vec3 delta = target->center() - center;
             const double dist = length(delta);
             if (dist <= 1e-6)
                 continue;
             Receiver receiver;
-            receiver.name = target->name;
+            receiver.name = target->name();
             receiver.normal = delta / dist * -1.0;
             receiver.point = target->center() + receiver.normal * target->worldRadius();
             receiver.albedo = target->material().albedo;
             receiver.diffuse = target->material().diffuse;
-            receiver.id = target->id;
+            receiver.id = target->id();
             receivers.push_back(receiver);
             ++sphereReceivers;
         }
         for (const BounceLight &light : lights)
         {
-            if (light.emitterId > 0 && light.emitterId == sphere->id)
+            if (light.emitterId != kInvalidEntityId && light.emitterId == sphere->id())
             {
                 out << "  light \"" << light.name << "\" skipped self emission\n";
                 continue;
@@ -305,9 +305,9 @@ void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<Bounce
                 const char *blocker = "";
                 if (align >= 0.995 && nDotL > 0.0 && attenuation * material.reflectivity > 0.002)
                 {
-                    blocker = bounceBlocker(scene, receiver.point, Q, receiver.id, sphere->id);
+                    blocker = bounceBlocker(scene, receiver.point, Q, receiver.id, sphere->id());
                     if (blocker[0] == '\0' && !light.directional)
-                        blocker = bounceBlocker(scene, Q, light.position, sphere->id, light.emitterId);
+                        blocker = bounceBlocker(scene, Q, light.position, sphere->id(), light.emitterId);
                 }
                 const bool kept = align >= 0.995 && nDotL > 0.0 && attenuation * material.reflectivity > 0.002 && blocker[0] == '\0';
                 const char *reason = kept ? "kept" : (align < 0.995 ? "align" : (nDotL <= 0.0 ? "faces away" : (attenuation * material.reflectivity <= 0.002 ? "dim" : "blocked")));
@@ -452,7 +452,7 @@ PointShadowFit fitPointShadow(const Vec3 &eye, const Vec3 &center, double radius
     return fit;
 }
 
-std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 &lookFrom, const Vec3 &lookAt, double fovDegrees, double aperture, double focusDistance, int width, int height, int samples, int depth, int selectedObject, int selectedLight)
+std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 &lookFrom, const Vec3 &lookAt, double fovDegrees, double aperture, double focusDistance, int width, int height, int samples, int depth, EntityId selectedObject, int selectedLight)
 {
     std::vector<const Mesh *> meshes;
     std::vector<float> meshMin;
@@ -461,8 +461,8 @@ std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 
     Vec3 boundsMax(-1e9, -1e9, -1e9);
     for (const auto &object : scene.objects())
     {
-        const auto *mesh = dynamic_cast<const Mesh *>(object.get());
-        if (mesh == nullptr || mesh->triangles().empty())
+        const auto *mesh = object;
+        if (!mesh->isMesh() || mesh->triangles().empty())
             continue;
         Vec3 boxMin;
         Vec3 boxMax;
@@ -503,44 +503,44 @@ std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 
     out << "objects " << scene.objects().size() << "\n";
     for (const auto &object : scene.objects())
     {
-        out << "object " << object->id << " \"" << object->name << "\" " << object->kind()
-            << " tag \"" << object->tag << "\" layer " << object->layer
-            << " parent " << object->parentId;
-        if (!object->prefab.empty())
-            out << " prefab \"" << object->prefab << "\"";
-        if (!object->instanceOf.empty())
-            out << " instance \"" << object->instanceOf << "\"";
-        if (object->id == selectedObject)
+        out << "object " << object->id() << " \"" << object->name() << "\" " << object->kind()
+            << " tag \"" << object->tag() << "\" layer " << object->layer()
+            << " parent " << object->parentId();
+        if (!object->prefab().empty())
+            out << " prefab \"" << object->prefab() << "\"";
+        if (!object->instanceOf().empty())
+            out << " instance \"" << object->instanceOf() << "\"";
+        if (object->id() == selectedObject)
             out << " SELECTED";
         out << "\n";
-        if (const auto *sphere = dynamic_cast<const Sphere *>(object.get()))
-            out << "  sphere center " << vecText(sphere->center()) << " radius " << sphere->worldRadius() << "\n";
-        else if (const auto *plane = dynamic_cast<const Plane *>(object.get()))
+        if (object->isSphere())
+            out << "  sphere center " << vecText(object->center()) << " radius " << object->worldRadius() << "\n";
+        else if (object->isPlane())
         {
-            out << "  plane point " << vecText(plane->point()) << " normal " << vecText(plane->normal());
-            if (plane->checker())
-                out << " checker " << vecText(plane->checkerAlbedo()) << " scale " << plane->checkerScale();
+            out << "  plane point " << vecText(object->point()) << " normal " << vecText(object->worldNormal());
+            if (object->checker())
+                out << " checker " << vecText(object->checkerAlbedo()) << " scale " << object->checkerScale();
             out << "\n";
         }
-        else if (const auto *mesh = dynamic_cast<const Mesh *>(object.get()))
+        else if (object->isMesh())
         {
             Vec3 boxMin;
             Vec3 boxMax;
-            worldBox(*mesh, boxMin, boxMax);
-            out << "  mesh pos " << vecText(mesh->position())
-                << " rot " << vecText(mesh->rotation())
-                << " scale " << mesh->worldScale()
-                << " tris " << mesh->triangles().size()
-                << " path \"" << mesh->sourcePath() << "\"\n";
+            worldBox(*object, boxMin, boxMax);
+            out << "  mesh pos " << vecText(object->position())
+                << " rot " << vecText(object->rotation())
+                << " scale " << object->worldScale()
+                << " tris " << object->triangles().size()
+                << " path \"" << object->sourcePath() << "\"\n";
             out << "  world box " << vecText(boxMin) << " .. " << vecText(boxMax) << "\n";
         }
-        const Motion &motion = object->motion;
+        const Motion &motion = object->motion();
         if (motion.active())
             out << "  motion move " << vecText(motion.move) << " rotate " << vecText(motion.rotate)
                 << " scale " << motion.scale << " period " << motion.period << "\n";
-        if (object->action.armed())
-            out << "  action target \"" << object->action.target << "\" move " << vecText(object->action.move)
-                << " rotate " << vecText(object->action.rotate) << "\n";
+        if (object->action().armed())
+            out << "  action target \"" << object->action().target << "\" move " << vecText(object->action().move)
+                << " rotate " << vecText(object->action().rotate) << "\n";
         writeMaterial(out, object->material());
     }
 
@@ -562,7 +562,7 @@ std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 
         if (!light.directional && !meshes.empty() && lightIndex < 8)
         {
             const PointShadowFit fit = fitPointShadow(light.position, center, radius, meshMin, meshMax, static_cast<int>(meshes.size()));
-            const char *lookName = fit.nearestMesh >= 0 && fit.nearestMesh < static_cast<int>(meshes.size()) ? meshes[static_cast<size_t>(fit.nearestMesh)]->name.c_str() : "";
+            const char *lookName = fit.nearestMesh >= 0 && fit.nearestMesh < static_cast<int>(meshes.size()) ? meshes[static_cast<size_t>(fit.nearestMesh)]->name().c_str() : "";
             out << "  shadow look \"" << lookName << "\" mesh " << fit.nearestMesh
                 << " target " << vecText(fit.target)
                 << " fovDeg " << (fit.fov * 180.0 / kPi)
@@ -594,7 +594,7 @@ std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 
                             else
                                 ++front;
                         }
-                out << "  caster " << mesh << " \"" << meshes[static_cast<size_t>(mesh)]->name
+                out << "  caster " << mesh << " \"" << meshes[static_cast<size_t>(mesh)]->name()
                     << "\" depth " << minDepth << " .. " << maxDepth
                     << " corners front " << front << " behind " << behind << "\n";
             }
@@ -611,12 +611,12 @@ std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 
         if (material.emission <= 0.01)
             continue;
         const Vec3 eye = object->worldPosition();
-        out << "emission light " << emissionIndex << " object " << object->id << " \"" << object->name
+        out << "emission light " << emissionIndex << " object " << object->id() << " \"" << object->name()
             << "\" pos " << vecText(eye) << " emission " << material.emission << "\n";
         if (!meshes.empty())
         {
             const PointShadowFit fit = fitPointShadow(eye, center, radius, meshMin, meshMax, static_cast<int>(meshes.size()));
-            const char *lookName = fit.nearestMesh >= 0 && fit.nearestMesh < static_cast<int>(meshes.size()) ? meshes[static_cast<size_t>(fit.nearestMesh)]->name.c_str() : "";
+            const char *lookName = fit.nearestMesh >= 0 && fit.nearestMesh < static_cast<int>(meshes.size()) ? meshes[static_cast<size_t>(fit.nearestMesh)]->name().c_str() : "";
             out << "  shadow look \"" << lookName << "\" mesh " << fit.nearestMesh
                 << " target " << vecText(fit.target)
                 << " fovDeg " << (fit.fov * 180.0 / kPi)
@@ -648,7 +648,7 @@ std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 
                             else
                                 ++front;
                         }
-                out << "  caster " << mesh << " \"" << meshes[static_cast<size_t>(mesh)]->name
+                out << "  caster " << mesh << " \"" << meshes[static_cast<size_t>(mesh)]->name()
                     << "\" depth " << minDepth << " .. " << maxDepth
                     << " corners front " << front << " behind " << behind << "\n";
             }

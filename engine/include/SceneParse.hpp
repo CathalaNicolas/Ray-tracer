@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Hittable.hpp"
+#include "Components.hpp"
 
 #include <string>
 
@@ -35,10 +35,13 @@ struct SurfaceExtras
     bool hasMotion = false;
     Action action;
     bool hasAction = false;
-    int parentId = 0;
+    EntityId parentId = kInvalidEntityId;
     std::string prefab;
     std::string instanceOf;
     int layer = 0;
+    EntityId id = kInvalidEntityId;
+    double scale = 1;
+    bool hasScale = false;
 };
 
 bool readQuoted(const std::string &line, size_t &index, std::string &text);

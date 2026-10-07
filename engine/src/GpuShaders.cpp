@@ -17,6 +17,10 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
 layout(location = 3) in float aMesh;
+layout(location = 4) in vec4 aPlace;
+layout(location = 5) in vec3 aAxisX;
+layout(location = 6) in vec3 aAxisY;
+layout(location = 7) in vec3 aAxisZ;
 uniform mat4 uClip;
 out vec3 vWorld;
 out vec3 vNormal;
@@ -24,11 +28,13 @@ out vec2 vUv;
 flat out float vMesh;
 void main()
 {
-    vWorld = aPos;
-    vNormal = aNormal;
+    vec3 world = aPlace.xyz + (aAxisX * aPos.x + aAxisY * aPos.y + aAxisZ * aPos.z) * aPlace.w;
+    vec3 n = aAxisX * aNormal.x + aAxisY * aNormal.y + aAxisZ * aNormal.z;
+    vWorld = world;
+    vNormal = n;
     vUv = aUv;
     vMesh = aMesh;
-    gl_Position = uClip * vec4(aPos, 1.0);
+    gl_Position = uClip * vec4(world, 1.0);
 }
 )glsl";
 
@@ -65,6 +71,10 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
 layout(location = 2) in vec2 aUv;
 layout(location = 3) in float aMesh;
+layout(location = 4) in vec4 aPlace;
+layout(location = 5) in vec3 aAxisX;
+layout(location = 6) in vec3 aAxisY;
+layout(location = 7) in vec3 aAxisZ;
 uniform mat4 uClip;
 uniform vec3 uLightPos;
 uniform int uParaboloid;
@@ -72,18 +82,19 @@ out vec3 vWorld;
 flat out float vMesh;
 void main()
 {
-    vWorld = aPos;
+    vec3 world = aPlace.xyz + (aAxisX * aPos.x + aAxisY * aPos.y + aAxisZ * aPos.z) * aPlace.w;
+    vWorld = world;
     vMesh = aMesh;
     if (uParaboloid == 0)
     {
-        gl_Position = uClip * vec4(aPos, 1.0);
+        gl_Position = uClip * vec4(world, 1.0);
         return;
     }
     vec3 side = uClip[0].xyz;
     vec3 up = uClip[1].xyz;
     vec3 fwd = uClip[2].xyz;
     float farP = max(uClip[3].w, 0.05);
-    vec3 delta = aPos - uLightPos;
+    vec3 delta = world - uLightPos;
     float dist = length(delta);
     vec3 dir = dist > 1e-5 ? delta / dist : fwd;
     if (dot(dir, fwd) * float(uParaboloid) <= 0.0)

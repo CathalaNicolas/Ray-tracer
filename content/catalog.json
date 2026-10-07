@@ -1,0 +1,11 @@
+{
+  "items": [
+    { "id": 1, "name": "Coin" }
+  ],
+  "creatures": [
+    { "id": 1, "name": "Wolf", "health": 30 }
+  ],
+  "zones": [
+    { "id": 1, "name": "Demo", "map_id": 1 }
+  ]
+}

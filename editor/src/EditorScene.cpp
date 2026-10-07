@@ -14,25 +14,25 @@
 namespace ed
 {
 
-bool objectChosen(const ViewState &view, int id)
+bool objectChosen(const ViewState &view, EntityId id)
 {
-    if (id < 0)
+    if (id == kInvalidEntityId)
         return false;
     if (id == view.selectedObject)
         return true;
     return std::find(view.alsoSelected.begin(), view.alsoSelected.end(), id) != view.alsoSelected.end();
 }
 
-void chooseObject(ViewState &view, int id, bool extend)
+void chooseObject(ViewState &view, EntityId id, bool extend)
 {
     view.selectedLight = -1;
-    if (!extend || id < 0)
+    if (!extend || id == kInvalidEntityId)
     {
         view.alsoSelected.clear();
         view.selectedObject = id;
         return;
     }
-    if (view.selectedObject < 0)
+    if (view.selectedObject == kInvalidEntityId)
     {
         view.selectedObject = id;
         return;
@@ -40,7 +40,7 @@ void chooseObject(ViewState &view, int id, bool extend)
     if (id == view.selectedObject)
     {
         if (view.alsoSelected.empty())
-            view.selectedObject = -1;
+            view.selectedObject = kInvalidEntityId;
         else
         {
             view.selectedObject = view.alsoSelected.back();
@@ -55,7 +55,7 @@ void chooseObject(ViewState &view, int id, bool extend)
         view.alsoSelected.push_back(id);
 }
 
-Vec3 worldCenterOf(Hittable *object)
+Vec3 worldCenterOf(Object *object)
 {
     return object != nullptr ? object->worldPosition() : Vec3();
 }
@@ -107,10 +107,10 @@ bool refreshAssets(Scene &scene)
     watch(scene.environment());
     for (const auto &object : scene.objects())
     {
-        if (auto *mesh = dynamic_cast<Mesh *>(object.get()))
+        if (object->isMesh())
         {
             std::string error;
-            if (mesh->refreshFromDisk(error))
+            if (object->refreshFromDisk(error))
                 changed = true;
         }
         const Material material = object->material();
@@ -120,7 +120,7 @@ bool refreshAssets(Scene &scene)
     return changed;
 }
 
-void setWorldCenter(Hittable *object, const Vec3 &world)
+void setWorldCenter(Object *object, const Vec3 &world)
 {
     if (object != nullptr)
         object->setWorldPosition(world);
@@ -128,27 +128,26 @@ void setWorldCenter(Hittable *object, const Vec3 &world)
 
 void duplicateSelection(Scene &scene, ViewState &view)
 {
-    std::vector<int> ids;
-    if (view.selectedObject >= 0)
+    std::vector<EntityId> ids;
+    if (view.selectedObject != kInvalidEntityId)
         ids.push_back(view.selectedObject);
     ids.insert(ids.end(), view.alsoSelected.begin(), view.alsoSelected.end());
     if (ids.empty())
         return;
     view.alsoSelected.clear();
-    view.selectedObject = -1;
-    for (int id : ids)
+    view.selectedObject = kInvalidEntityId;
+    for (EntityId id : ids)
     {
-        Hittable *object = scene.find(id);
+        Object *object = scene.find(id);
         if (object == nullptr)
             continue;
-        auto copy = object->clone();
-        copy->id = 0;
+        const EntityId added = object->clone(scene);
+        Object *copy = scene.find(added);
         const Vec3 nudge(0.55, 0.0, 0.55);
         copy->setLocalPosition(copy->localPosition() + nudge);
-        if (!copy->name.empty())
-            copy->name += " copy";
-        const int added = scene.add(std::move(copy));
-        if (view.selectedObject < 0)
+        if (!copy->name().empty())
+            copy->name() += " copy";
+        if (view.selectedObject == kInvalidEntityId)
             view.selectedObject = added;
         else
             view.alsoSelected.push_back(added);
@@ -158,14 +157,14 @@ void duplicateSelection(Scene &scene, ViewState &view)
 
 void deleteSelection(Scene &scene, ViewState &view)
 {
-    if (view.selectedObject >= 0 || !view.alsoSelected.empty())
+    if (view.selectedObject != kInvalidEntityId || !view.alsoSelected.empty())
     {
-        std::vector<int> ids = view.alsoSelected;
-        if (view.selectedObject >= 0)
+        std::vector<EntityId> ids = view.alsoSelected;
+        if (view.selectedObject != kInvalidEntityId)
             ids.push_back(view.selectedObject);
-        for (int id : ids)
+        for (EntityId id : ids)
             scene.remove(id);
-        view.selectedObject = -1;
+        view.selectedObject = kInvalidEntityId;
         view.alsoSelected.clear();
     }
     else if (view.selectedLight >= 0 && static_cast<size_t>(view.selectedLight) < scene.lights().size())
@@ -183,7 +182,7 @@ void deleteSelection(Scene &scene, ViewState &view)
     }
 }
 
-int addSphere(Scene &scene)
+EntityId addSphere(Scene &scene)
 {
     static const Vec3 colors[] = {
         Vec3(0.2, 0.45, 0.9),
@@ -197,37 +196,34 @@ int addSphere(Scene &scene)
             ++count;
     }
     Vec3 color = colors[count % 4];
-    auto sphere = std::make_unique<Sphere>(
+    Object *sphere = scene.addSphere(
         Vec3(-1.2 + count * 0.55, 0.45, 0.8),
         0.45,
         Material::makeDiffuse(color));
-    int id = scene.add(std::move(sphere));
-    if (Hittable *created = scene.find(id))
-        created->name = "Sphere " + std::to_string(id);
+    const EntityId id = sphere->id();
+    sphere->name() = "Sphere " + std::to_string(id);
     return id;
 }
 
-int addPlane(Scene &scene)
+EntityId addPlane(Scene &scene)
 {
     Material material = Material::makeDiffuse(Vec3(0.55, 0.55, 0.6));
-    auto plane = std::make_unique<Plane>(Vec3(0, 1.2, -1.5), Vec3(0, 0, 1), material);
-    int id = scene.add(std::move(plane));
-    if (Hittable *created = scene.find(id))
-        created->name = "Plane " + std::to_string(id);
-    return id;
+    Object *plane = scene.addPlane(Vec3(0, 1.2, -1.5), Vec3(0, 0, 1), material);
+    plane->name() = "Plane " + std::to_string(plane->id());
+    return plane->id();
 }
 
-bool drawObjectSettings(Hittable &object, const Scene &scene)
+bool drawObjectSettings(Object &object, const Scene &scene)
 {
-    editName(object.id, object.name);
+    editName(object.id(), object.name());
     bool changed = false;
     {
-        static int tagId = -1;
+        static EntityId tagId = kInvalidEntityId;
         static char tagBuffer[64] = {};
-        if (tagId != object.id || object.tag != tagBuffer)
+        if (tagId != object.id() || object.tag() != tagBuffer)
         {
-            tagId = object.id;
-            std::snprintf(tagBuffer, sizeof(tagBuffer), "%s", object.tag.c_str());
+            tagId = object.id();
+            std::snprintf(tagBuffer, sizeof(tagBuffer), "%s", object.tag().c_str());
         }
         if (ImGui::InputText("Tag", tagBuffer, sizeof(tagBuffer)))
         {
@@ -236,41 +232,41 @@ bool drawObjectSettings(Hittable &object, const Scene &scene)
         }
     }
     {
-        int layer = object.layer == 1 ? 1 : 0;
+        int layer = object.layer() == 1 ? 1 : 0;
         const char *layers[] = {"Player and camera", "Player only"};
         if (ImGui::Combo("Layer", &layer, layers, 2))
         {
-            object.layer = layer;
+            object.layer() = layer;
             changed = true;
         }
     }
     ImGui::TextDisabled("%s", object.kind());
     {
         std::string parentLabel = "None";
-        if (object.parentId != 0)
+        if (object.parentId() != 0)
         {
-            if (const Hittable *parent = scene.find(object.parentId))
-                parentLabel = parent->name.empty() ? ("#" + std::to_string(parent->id)) : parent->name;
+            if (const Object *parent = scene.find(object.parentId()))
+                parentLabel = parent->name().empty() ? ("#" + std::to_string(parent->id())) : parent->name();
             else
-                parentLabel = "#" + std::to_string(object.parentId);
+                parentLabel = "#" + std::to_string(object.parentId());
         }
         if (ImGui::BeginCombo("Parent", parentLabel.c_str()))
         {
-            if (ImGui::Selectable("None", object.parentId == 0))
+            if (ImGui::Selectable("None", object.parentId() == 0))
             {
-                object.parentId = 0;
+                object.setParentId(0);
                 object.notifyTransformChanged();
                 changed = true;
             }
             for (const auto &other : scene.objects())
             {
-                if (other->id == object.id)
+                if (other->id() == object.id())
                     continue;
-                std::string label = other->name.empty() ? ("#" + std::to_string(other->id)) : other->name;
-                label += "##parent" + std::to_string(other->id);
-                if (ImGui::Selectable(label.c_str(), object.parentId == other->id))
+                std::string label = other->name().empty() ? ("#" + std::to_string(other->id())) : other->name();
+                label += "##parent" + std::to_string(other->id());
+                if (ImGui::Selectable(label.c_str(), object.parentId() == other->id()))
                 {
-                    object.parentId = other->id;
+                    object.setParentId(other->id());
                     object.notifyTransformChanged();
                     changed = true;
                 }
@@ -278,8 +274,9 @@ bool drawObjectSettings(Hittable &object, const Scene &scene)
             ImGui::EndCombo();
         }
     }
-    if (auto *sphere = dynamic_cast<Sphere *>(&object))
+    if (object.isSphere())
     {
+        Object *sphere = &object;
         Vec3 center = sphere->localCenter();
         if (editVec3("Position", center, 0.02f))
         {
@@ -293,8 +290,9 @@ bool drawObjectSettings(Hittable &object, const Scene &scene)
             changed = true;
         }
     }
-    else if (auto *plane = dynamic_cast<Plane *>(&object))
+    else if (object.isPlane())
     {
+        Object *plane = &object;
         Vec3 point = plane->localPoint();
         if (editVec3("Position", point, 0.02f))
         {
@@ -302,11 +300,11 @@ bool drawObjectSettings(Hittable &object, const Scene &scene)
             changed = true;
         }
 
-        static int normalId = -1;
+        static EntityId normalId = kInvalidEntityId;
         static Vec3 normalEdit;
-        if (normalId != plane->id)
+        if (normalId != plane->id())
         {
-            normalId = plane->id;
+            normalId = plane->id();
             normalEdit = plane->normal();
         }
         float normalFields[3] = {
@@ -344,8 +342,9 @@ bool drawObjectSettings(Hittable &object, const Scene &scene)
             }
         }
     }
-    else if (auto *mesh = dynamic_cast<Mesh *>(&object))
+    else if (object.isMesh())
     {
+        Object *mesh = &object;
         Vec3 position = mesh->localPositionValue();
         if (editVec3("Position", position, 0.02f))
         {
@@ -368,33 +367,33 @@ bool drawObjectSettings(Hittable &object, const Scene &scene)
         if (!mesh->sourcePath().empty())
             ImGui::TextWrapped("%s", filenameOf(mesh->sourcePath()).c_str());
     }
-    if (editVec3("Motion move", object.motion.move, 0.02f))
+    if (editVec3("Motion move", object.motion().move, 0.02f))
         changed = true;
-    if (editVec3("Motion rotate", object.motion.rotate, 0.4f))
+    if (editVec3("Motion rotate", object.motion().rotate, 0.4f))
         changed = true;
-    if (editDouble("Motion scale", object.motion.scale, 0.01, -5, 5))
+    if (editDouble("Motion scale", object.motion().scale, 0.01, -5, 5))
         changed = true;
-    if (editDouble("Motion period", object.motion.period, 0.05, 0.2, 30))
+    if (editDouble("Motion period", object.motion().period, 0.05, 0.2, 30))
         changed = true;
-    if (editDouble("Spawn every", object.spawnEvery, 0.05, 0, 60))
+    if (editDouble("Spawn every", object.spawnEvery(), 0.05, 0, 60))
         changed = true;
     {
-        static int actionId = -1;
+        static EntityId actionId = kInvalidEntityId;
         static char actionBuffer[64] = {};
-        if (actionId != object.id)
+        if (actionId != object.id())
         {
-            actionId = object.id;
-            std::snprintf(actionBuffer, sizeof(actionBuffer), "%s", object.action.target.c_str());
+            actionId = object.id();
+            std::snprintf(actionBuffer, sizeof(actionBuffer), "%s", object.action().target.c_str());
         }
         if (ImGui::InputText("Use target", actionBuffer, sizeof(actionBuffer)))
         {
-            object.action.target = actionBuffer;
+            object.action().target = actionBuffer;
             changed = true;
         }
     }
-    if (editVec3("Use move", object.action.move, 0.02f))
+    if (editVec3("Use move", object.action().move, 0.02f))
         changed = true;
-    if (editVec3("Use rotate", object.action.rotate, 1.0f))
+    if (editVec3("Use rotate", object.action().rotate, 1.0f))
         changed = true;
     if (editMaterial(object))
         changed = true;
@@ -436,7 +435,7 @@ bool handleViewMouse(Scene &scene, ViewState &view, float drawWidth, float drawH
     static Vec3 gizmoNormal;
     static double gizmoSize = 1;
     static float gizmoPixels = 0;
-    static std::vector<std::pair<int, Vec3>> gizmoGroup;
+    static std::vector<std::pair<EntityId, Vec3>> gizmoGroup;
 
     if (view.playing)
     {
@@ -459,7 +458,7 @@ bool handleViewMouse(Scene &scene, ViewState &view, float drawWidth, float drawH
     {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
-            Hittable *object = scene.find(view.selectedObject);
+            Object *object = scene.find(view.selectedObject);
             if (object != nullptr)
             {
                 const Vec3 axis = gizmoAxisDir(gizmoAxis);
@@ -474,9 +473,9 @@ bool handleViewMouse(Scene &scene, ViewState &view, float drawWidth, float drawH
                     setWorldCenter(object, world);
                     for (const auto &item : gizmoGroup)
                     {
-                        if (item.first == object->id)
+                        if (item.first == object->id())
                             continue;
-                        Hittable *other = scene.find(item.first);
+                        Object *other = scene.find(item.first);
                         if (other == nullptr)
                             continue;
                         other->bindScene(&scene);
@@ -498,13 +497,13 @@ bool handleViewMouse(Scene &scene, ViewState &view, float drawWidth, float drawH
                             rotation.z = gizmoEuler.z + degrees;
                         object->setLocalRotation(rotation);
                     }
-                    else if (auto *plane = dynamic_cast<Plane *>(object))
+                    else if (object->isPlane())
                     {
                         const double angle = degrees * kPi / 180.0;
                         const double c = std::cos(angle);
                         const double s = std::sin(angle);
                         const Vec3 turned = gizmoNormal * c + cross(axis, gizmoNormal) * s + axis * dot(axis, gizmoNormal) * (1.0 - c);
-                        plane->setNormal(turned);
+                        object->setNormal(turned);
                     }
                 }
                 else
@@ -536,7 +535,7 @@ bool handleViewMouse(Scene &scene, ViewState &view, float drawWidth, float drawH
         ImVec2 origin = ImGui::GetItemRectMin();
         Camera camera(view.lookFrom, view.lookAt, Vec3(0, 1, 0), view.fov, aspect);
         const int axis = pickGizmo(scene, view.selectedObject, view.gizmoMode, camera, origin.x, origin.y, origin.x + drawWidth, origin.y + drawHeight, mouse.x, mouse.y);
-        Hittable *object = axis == 0 ? nullptr : scene.find(view.selectedObject);
+        Object *object = axis == 0 ? nullptr : scene.find(view.selectedObject);
         if (object != nullptr)
         {
             pushEditorHistory(scene, view);
@@ -545,16 +544,16 @@ bool handleViewMouse(Scene &scene, ViewState &view, float drawWidth, float drawH
             gizmoGrab = object->worldPosition();
             gizmoEuler = object->localRotation();
             gizmoSize = object->localScale();
-            if (const auto *plane = dynamic_cast<const Plane *>(object))
-                gizmoNormal = plane->normal();
+            if (object->isPlane())
+                gizmoNormal = object->normal();
             gizmoT = gizmoAxisT(imageRay(), gizmoGrab, gizmoAxisDir(axis));
             gizmoGroup.clear();
             if (view.gizmoMode == 0)
             {
-                gizmoGroup.push_back({object->id, gizmoGrab});
-                for (int id : view.alsoSelected)
+                gizmoGroup.push_back({object->id(), gizmoGrab});
+                for (EntityId id : view.alsoSelected)
                 {
-                    Hittable *extra = scene.find(id);
+                    Object *extra = scene.find(id);
                     if (extra == nullptr)
                         continue;
                     extra->bindScene(&scene);
@@ -590,7 +589,7 @@ bool handleViewMouse(Scene &scene, ViewState &view, float drawWidth, float drawH
                 if (scene.intersect(camera.getRay(u, 1.0 - v), kEpsilon, std::numeric_limits<double>::infinity(), hit))
                     chooseObject(view, hit.objectId, ImGui::GetIO().KeyShift);
                 else
-                    chooseObject(view, -1, false);
+                    chooseObject(view, kInvalidEntityId, false);
                 dirty = true;
             }
             orbiting = false;

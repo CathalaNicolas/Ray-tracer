@@ -2,12 +2,16 @@
 #include "stb/stb_image.h"
 
 #include "ImageIO.hpp"
+#include "TextureCooked.hpp"
 
 #include <cstdio>
 
 bool loadImage(const std::filesystem::path &path, LoadedImage &image, std::string &error)
 {
     image = {};
+    if (isDdsPath(path))
+        return loadDdsFile(path, image, error);
+
 #ifdef _WIN32
     FILE *file = _wfopen(path.wstring().c_str(), L"rb");
 #else

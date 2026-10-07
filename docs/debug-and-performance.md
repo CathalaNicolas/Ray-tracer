@@ -2,11 +2,36 @@
 
 ## Self-test
 
-`raytracer.exe --self-test` runs `engine/src/self_test.cpp` and `runPlaySelfTests`. It prints `self-test: ok` when every check passes. A failure prints `FAIL` and a name, and the process returns non-zero.
+`raytracer.exe --self-test` runs `engine/src/SelfTestEntt.cpp` and `runPlaySelfTests`. It prints `self-test: ok` when every check passes. A failure prints `FAIL` and a name, and the process returns non-zero. On Windows the renderer checks create an offscreen OpenGL context through `RayTracer`. GPU and FBX checks stay on this path, not in `tests.exe`.
 
 The renderer checks cover scene IO, a tail parse of `layer 1` and `prefab "Gem"` without writing a scene file, mesh sharing, unclamped emission, Reinhard on the display path, normal maps, mesh yaw, and the lens fields. Self-test also checks `soundDistanceFade` against `sound_far` and that `applyEngineSetting` accepts known keys. The play checks cover movement, gravity, jump, solids, pickups, and triggers. Success from the play tests is silent. They only print on failure.
 
 The opaque non-glass comparison stays valid when aperture is 0 and linear output is on. Do not clamp that path to 1.
+
+## Headless `tests`
+
+`tests.exe` (CMake target `tests`) is a doctest binary with no editor, ImGui, or GPU translation units. It initializes logging and jobs, then runs:
+
+- `runPlaySelfTests()` through `SimSession::step` (same play checks as above, plus a pickup `SimEvent` and pose interpolation smoke)
+- bitsery round-trip of `Command` / `Snapshot` / `SimEvent` and a headless command replay (`tests/SimReplayTests.cpp`)
+- SQLite play-session save/load (`tests/SimSaveTests.cpp`; mid-jump save then 300 ticks versus the uninterrupted run)
+- command replay over 18000 ticks plus pickup / goal / hazard scoring (`tests/SimReplayTests.cpp`)
+- `createDemoScene()` plus two `SimSession::step` ticks (OBJ meshes via `raytracer_import`)
+- a small jobs smoke case (`parallelFor` plus a pinned read of `vcpkg.json`)
+- CPU frustum / view-distance tests and `rankGpuLights` (`tests/FrustumTests.cpp`)
+
+Run it from the project root so `assets/` and `vcpkg.json` resolve. It does not create a window or an OpenGL context.
+
+## Logging (spdlog)
+
+`logging::init` in `engine/src/Log.cpp` installs a color console sink and a `raytracer.log` file sink (truncated each run), sets the default logger name `raytracer`, and writes a start line. `logging::shutdown` flushes and tears the logger down. `editor/src/main.cpp` calls both around the process lifetime. Startup paths log editor / game / offline render at info level.
+
+## Tracy
+
+`raytracer` and `tests` link `Tracy::TracyClient` (`TRACY_ENABLE` comes from that target). Capture is optional: zones are no-ops when no Tracy server is attached.
+
+- `editor/src/editor.cpp`: `ZoneScopedN("EditorFrame")` for each window-loop iteration, `FrameMark` after `SwapBuffers`
+- `engine/src/Play.cpp`: `ZoneScopedN("stepPlay")` at the top of `stepPlay`
 
 ## In the editor
 
@@ -34,10 +59,15 @@ The same file ends its object list with a `mirror bounce` section. For each sphe
 
 The toolbar checkbox **Bounce rays** draws a segment only when that sample's rgb sums to more than 0.02. A kept bounce is green, thickness 2. A rejected one is red, thickness 1. Each segment is the light position to `Q`, then `Q` to the receiver. Dim test points stay in the dump and are not drawn.
 
+## Replay
+
+`CommandRecorder` on `SimSession` copies every `enqueue`'d `Command`. Live play still drops hitch leftover in `takePlaySteps`; that time is not in the log. `replayCommands` / `replayFromBlob` in `engine/include/SimReplay.hpp` walk the recorded ticks in order (`kPlayStep` each, no wall clock). A few dozen ticks in `tests.exe` is enough; ten minutes is a target, not a requirement. Compare `PlayState` HUD fields and entity transform doubles (or skip pose if the play integrator is in flux). Bitsery helpers are `engine/include/SimSerialize.hpp`.
+
 ## Not built
 
-- An on-screen profiler for CPU, GPU, draw, and simulation.
+- An on-screen profiler for CPU, GPU, draw, and simulation (Tracy is capture-only today).
+- Headless demo-scene load and renderer self-tests inside `tests.exe` without an offscreen GL context.
 - Collider overlay for emissive objects that are not in `scene.lights()`.
 - A console command line.
 - Crash logs.
-- A replay of a play session.
+- Keeping dropped hitch leftover so a wall-clock tape would match a lagged live session.

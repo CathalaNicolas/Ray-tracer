@@ -4,7 +4,12 @@
 #include "Material.hpp"
 #include "Sound.hpp"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <commdlg.h>
+#include <SDL3/SDL.h>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -16,25 +21,43 @@ namespace ed
 int vkFromName(const std::string &name)
 {
     if (name == "Space")
-        return VK_SPACE;
+        return SDLK_SPACE;
     if (name.size() == 1)
     {
         unsigned char letter = static_cast<unsigned char>(name[0]);
         if (letter >= 'a' && letter <= 'z')
-            letter = static_cast<unsigned char>(letter - 'a' + 'A');
-        if ((letter >= 'A' && letter <= 'Z') || (letter >= '0' && letter <= '9'))
+            return static_cast<int>(SDLK_A + (letter - 'a'));
+        if (letter >= 'A' && letter <= 'Z')
+            return static_cast<int>(SDLK_A + (letter - 'A'));
+        if (letter >= '0' && letter <= '9')
             return static_cast<int>(letter);
     }
-    return 0;
+    try
+    {
+        const int parsed = std::stoi(name);
+        if (parsed == VK_SPACE || parsed == static_cast<int>(SDLK_SPACE))
+            return SDLK_SPACE;
+        if (parsed >= 'A' && parsed <= 'Z')
+            return static_cast<int>(SDLK_A + (parsed - 'A'));
+        return parsed;
+    }
+    catch (...)
+    {
+        return 0;
+    }
 }
 
-std::string nameFromVk(int vk)
+std::string nameFromVk(int key)
 {
-    if (vk == VK_SPACE)
+    if (key == SDLK_SPACE || key == VK_SPACE)
         return "Space";
-    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9'))
-        return std::string(1, static_cast<char>(vk));
-    return std::to_string(vk);
+    if (key >= SDLK_A && key <= SDLK_Z)
+        return std::string(1, static_cast<char>('A' + (key - SDLK_A)));
+    if (key >= 'A' && key <= 'Z')
+        return std::string(1, static_cast<char>(key));
+    if ((key >= '0' && key <= '9') || (key >= SDLK_0 && key <= SDLK_9))
+        return std::string(1, static_cast<char>(key));
+    return std::to_string(key);
 }
 
 void assignBind(const std::string &action, int vk)
@@ -215,7 +238,7 @@ bool pickOpenFile(const wchar_t *filter, const wchar_t *extension, std::filesyst
     wchar_t buffer[4096] = {};
     OPENFILENAMEW dialog = {};
     dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = g_hwnd;
+    dialog.hwndOwner = static_cast<HWND>(nativeWindowHandle());
     dialog.lpstrFilter = filter;
     dialog.lpstrFile = buffer;
     dialog.nMaxFile = 4096;
@@ -232,7 +255,7 @@ bool pickSaveFile(const wchar_t *filter, const wchar_t *extension, std::filesyst
     wchar_t buffer[4096] = {};
     OPENFILENAMEW dialog = {};
     dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = g_hwnd;
+    dialog.hwndOwner = static_cast<HWND>(nativeWindowHandle());
     dialog.lpstrFilter = filter;
     dialog.lpstrFile = buffer;
     dialog.nMaxFile = 4096;
@@ -260,9 +283,9 @@ Camera viewCamera(const ViewState &view, double aspect)
     return camera;
 }
 
-bool editName(int id, std::string &name)
+bool editName(EntityId id, std::string &name)
 {
-    static int editedId = -1;
+    static EntityId editedId = kInvalidEntityId;
     static char buffer[128] = {};
     if (editedId != id)
     {
@@ -275,7 +298,7 @@ bool editName(int id, std::string &name)
     return true;
 }
 
-bool editMaterial(Hittable &object)
+bool editMaterial(Object &object)
 {
     Material material = object.material();
     bool changed = false;

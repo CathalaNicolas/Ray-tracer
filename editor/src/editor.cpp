@@ -39,17 +39,16 @@ int runEditor(int, int, int, int, bool)
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_impl_opengl3.h"
-#include "imgui_impl_win32.h"
+#include "imgui_impl_sdl3.h"
+
+#include <SDL3/SDL.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 #include <commdlg.h>
-#include <mmsystem.h>
 #include <GL/gl.h>
-
-#pragma comment(lib, "winmm.lib")
 
 #include "Sound.hpp"
 #include "DebugDraw.hpp"
@@ -57,16 +56,14 @@ int runEditor(int, int, int, int, bool)
 #include "EditorInternal.hpp"
 
 #include "Play.hpp"
+#include "SimSave.hpp"
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+#include <tracy/Tracy.hpp>
 
 namespace ed
 {
 
-
-
-HGLRC g_glContext = nullptr;
-HWND g_hwnd = nullptr;
+SDL_Window *g_window = nullptr;
 int g_windowWidth = 1280;
 int g_windowHeight = 800;
 ImVec2 g_viewImageMin;
@@ -77,13 +74,13 @@ int gSavedWidth = 0;
 int gSavedHeight = 0;
 int gSavedSamples = 0;
 int gSavedBounces = -1;
-int gKeyForward = 'Z';
-int gKeyBack = 'S';
-int gKeyLeft = 'Q';
-int gKeyRight = 'D';
-int gKeyJump = VK_SPACE;
-int gKeyJumpAlt = 'E';
-int gKeyUse = 'F';
+int gKeyForward = SDLK_Z;
+int gKeyBack = SDLK_S;
+int gKeyLeft = SDLK_Q;
+int gKeyRight = SDLK_D;
+int gKeyJump = SDLK_SPACE;
+int gKeyJumpAlt = SDLK_E;
+int gKeyUse = SDLK_F;
 int gCaptureBind = 0;
 
 bool gStopPrompt = false;
@@ -91,7 +88,49 @@ std::optional<Scene> gKeptScene;
 
 bool keyDown(int key)
 {
-    return (::GetAsyncKeyState(key) & 0x8000) != 0;
+    if (key == 0)
+        return false;
+    const SDL_Scancode scancode = SDL_GetScancodeFromKey(static_cast<SDL_Keycode>(key), nullptr);
+    if (scancode == SDL_SCANCODE_UNKNOWN)
+        return false;
+    const bool *keys = SDL_GetKeyboardState(nullptr);
+    return keys != nullptr && keys[scancode];
+}
+
+void *nativeWindowHandle()
+{
+    if (g_window == nullptr)
+        return nullptr;
+    return SDL_GetPointerProperty(
+        SDL_GetWindowProperties(g_window),
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+        nullptr);
+}
+
+bool editorWindowFocused()
+{
+    return g_window != nullptr && SDL_GetKeyboardFocus() == g_window;
+}
+
+void requestEditorQuit()
+{
+    SDL_Event event{};
+    event.type = SDL_EVENT_QUIT;
+    SDL_PushEvent(&event);
+}
+
+void refreshWindowSize()
+{
+    if (g_window == nullptr)
+        return;
+    int width = 0;
+    int height = 0;
+    SDL_GetWindowSizeInPixels(g_window, &width, &height);
+    if (width > 0 && height > 0)
+    {
+        g_windowWidth = width;
+        g_windowHeight = height;
+    }
 }
 
 Vec3 cameraForwardXZ(const ViewState &view)
@@ -111,7 +150,7 @@ bool pickScenePath(bool save, std::filesystem::path &path)
 
     OPENFILENAMEW dialog = {};
     dialog.lStructSize = sizeof(dialog);
-    dialog.hwndOwner = g_hwnd;
+    dialog.hwndOwner = static_cast<HWND>(nativeWindowHandle());
     dialog.lpstrFilter = L"Scene\0*.scene\0";
     dialog.lpstrFile = buffer;
     dialog.nMaxFile = MAX_PATH;
@@ -131,107 +170,15 @@ void pushEditorHistory(const Scene &scene, const ViewState &view);
 
 EditorHistory editorHistory;
 
-bool createGlContext(HWND hwnd, WglWindow &window)
+void presentLoading()
 {
-    HDC dc = ::GetDC(hwnd);
-    PIXELFORMATDESCRIPTOR format = {};
-    format.nSize = sizeof(format);
-    format.nVersion = 1;
-    format.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-    format.iPixelType = PFD_TYPE_RGBA;
-    format.cColorBits = 32;
-    const int chosen = ::ChoosePixelFormat(dc, &format);
-    if (chosen == 0 || ::SetPixelFormat(dc, chosen, &format) == FALSE)
-    {
-        ::ReleaseDC(hwnd, dc);
-        return false;
-    }
-    ::ReleaseDC(hwnd, dc);
-    window.dc = ::GetDC(hwnd);
-
-    HGLRC temporary = wglCreateContext(window.dc);
-    if (temporary == nullptr || !wglMakeCurrent(window.dc, temporary))
-    {
-        if (temporary != nullptr)
-            wglDeleteContext(temporary);
-        return false;
-    }
-
-    GLint major = 0;
-    GLint minor = 0;
-    glGetIntegerv(0x821B, &major);
-    glGetIntegerv(0x821C, &minor);
-    const char *version = reinterpret_cast<const char *>(glGetString(GL_VERSION));
-    if (major == 0 && minor == 0 && version != nullptr)
-    {
-        int parsedMajor = 0;
-        int parsedMinor = 0;
-        if (std::sscanf(version, "%d.%d", &parsedMajor, &parsedMinor) >= 1)
-        {
-            major = parsedMajor;
-            minor = parsedMinor;
-        }
-    }
-
-    g_glContext = temporary;
-    if (major * 100 + minor * 10 >= 300)
-        return true;
-
-    using CreateAttribs = HGLRC(WINAPI *)(HDC, HGLRC, const int *);
-    auto createAttribs = reinterpret_cast<CreateAttribs>(wglGetProcAddress("wglCreateContextAttribsARB"));
-    const int attribs[] = {
-        0x2091, 3,
-        0x2092, 0,
-        0x9126, 0x0001,
-        0};
-    HGLRC modern = createAttribs != nullptr ? createAttribs(window.dc, nullptr, attribs) : nullptr;
-    if (modern != nullptr)
-    {
-        wglMakeCurrent(nullptr, nullptr);
-        wglDeleteContext(temporary);
-        g_glContext = modern;
-        wglMakeCurrent(window.dc, g_glContext);
-    }
-    return true;
-}
-
-LRESULT WINAPI windowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    if (ImGui_ImplWin32_WndProcHandler(hwnd, message, wParam, lParam))
-        return 1;
-    switch (message)
-    {
-    case WM_SIZE:
-        if (wParam != SIZE_MINIMIZED)
-        {
-            g_windowWidth = LOWORD(lParam);
-            g_windowHeight = HIWORD(lParam);
-        }
-        return 0;
-    case WM_SYSCOMMAND:
-        if ((wParam & 0xfff0) == SC_KEYMENU)
-            return 0;
-        break;
-    case WM_DESTROY:
-        ::PostQuitMessage(0);
-        return 0;
-    default:
-        break;
-    }
-    return ::DefWindowProcW(hwnd, message, wParam, lParam);
-}
-
-void presentLoading(HDC dc)
-{
-    MSG message;
-    while (::PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
-    {
-        ::TranslateMessage(&message);
-        ::DispatchMessage(&message);
-    }
+    SDL_Event event;
+    while (SDL_PollEvent(&event))
+        ImGui_ImplSDL3_ProcessEvent(&event);
+    refreshWindowSize();
 
     ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplWin32_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     const ImVec2 center(
@@ -251,7 +198,7 @@ void presentLoading(HDC dc)
     glClearColor(0.12f, 0.12f, 0.13f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    ::SwapBuffers(dc);
+    SDL_GL_SwapWindow(g_window);
 }
 
 } // namespace ed
@@ -261,55 +208,60 @@ using namespace ed;
 int runEditor(int width, int height, int samples, int depth, bool gameMode)
 {
     loadEditorSettings();
-    ImGui_ImplWin32_EnableDpiAwareness();
-    float dpiScale = ImGui_ImplWin32_GetDpiScaleForMonitor(::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
-
-    WNDCLASSEXW windowClass = {};
-    windowClass.cbSize = sizeof(windowClass);
-    windowClass.style = CS_OWNDC;
-    windowClass.lpfnWndProc = windowProc;
-    windowClass.hInstance = ::GetModuleHandleW(nullptr);
-    windowClass.lpszClassName = L"RayTracerEditor";
-    ::RegisterClassExW(&windowClass);
-
-    HWND hwnd = ::CreateWindowW(
-        windowClass.lpszClassName,
-        gameMode ? L"Game" : L"Ray Tracer",
-        WS_OVERLAPPEDWINDOW,
-        100,
-        100,
-        static_cast<int>(1440 * dpiScale),
-        static_cast<int>(900 * dpiScale),
-        nullptr,
-        nullptr,
-        windowClass.hInstance,
-        nullptr);
-    g_hwnd = hwnd;
-
-    WglWindow glWindow;
-    if (!createGlContext(hwnd, glWindow))
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
     {
-        std::cerr << "Could not create an OpenGL context\n";
-        ::DestroyWindow(hwnd);
-        ::UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
+        std::cerr << "Could not initialize SDL: " << SDL_GetError() << "\n";
         return 1;
     }
-    wglMakeCurrent(glWindow.dc, g_glContext);
-    ::ShowWindow(hwnd, SW_SHOWDEFAULT);
-    ::UpdateWindow(hwnd);
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+
+    SDL_Window *window = SDL_CreateWindow(
+        gameMode ? "Game" : "Ray Tracer",
+        1440,
+        900,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    if (window == nullptr)
+    {
+        std::cerr << "Could not create a window: " << SDL_GetError() << "\n";
+        SDL_Quit();
+        return 1;
+    }
+    g_window = window;
+    refreshWindowSize();
+
+    SDL_GLContext glContext = SDL_GL_CreateContext(window);
+    if (glContext == nullptr)
+    {
+        std::cerr << "Could not create an OpenGL context: " << SDL_GetError() << "\n";
+        SDL_DestroyWindow(window);
+        g_window = nullptr;
+        SDL_Quit();
+        return 1;
+    }
+    SDL_GL_MakeCurrent(window, glContext);
+
+    float dpiScale = SDL_GetWindowDisplayScale(window);
+    if (dpiScale < 0.25f)
+        dpiScale = 1.0f;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     io.IniFilename = nullptr;
     ImGui::StyleColorsDark();
     ImGuiStyle &style = ImGui::GetStyle();
     style.ScaleAllSizes(dpiScale);
     style.FontScaleDpi = dpiScale;
-    ImGui_ImplWin32_InitForOpenGL(hwnd);
-    ImGui_ImplOpenGL3_Init();
-    presentLoading(glWindow.dc);
+    ImGui_ImplSDL3_InitForOpenGL(window, glContext);
+    ImGui_ImplOpenGL3_Init("#version 330");
+    presentLoading();
 
     CameraSetup setup = demoCameraSetup();
     ViewState view;
@@ -325,6 +277,11 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
 
     Scene scene = createDemoScene();
     Scene playSnapshot;
+    PlayState playState;
+    SimSession sim;
+    CommandRecorder playRecorder;
+    sim.attach(scene, playState);
+    sim.setRecorder(&playRecorder);
     std::string notice;
     std::uint64_t requested = 1;
     int renderMs = 0;
@@ -333,13 +290,11 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
     bool wasPlaying = false;
     double playAccumulator = 0;
     float timeScale = 1.0f;
-    PlayState playState;
     ChaseCamera chase;
     Vec3 savedLookFrom = view.lookFrom;
     Vec3 savedLookAt = view.lookAt;
-    LARGE_INTEGER perfFreq;
-    LARGE_INTEGER perfLast;
-    ::QueryPerformanceFrequency(&perfFreq);
+    const Uint64 perfFreq = SDL_GetPerformanceFrequency();
+    Uint64 perfLast = 0;
 
     GpuRayTracer gpu;
     bool useGpu = gpu.init();
@@ -360,36 +315,40 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
     int latestWidth = 0;
     int latestHeight = 0;
     bool done = false;
-    ::QueryPerformanceCounter(&perfLast);
+    perfLast = SDL_GetPerformanceCounter();
 
     while (!done)
     {
-        MSG message;
-        while (::PeekMessage(&message, nullptr, 0, 0, PM_REMOVE))
+        ZoneScopedN("EditorFrame");
+
+        SDL_Event event;
+        while (SDL_PollEvent(&event))
         {
-            ::TranslateMessage(&message);
-            ::DispatchMessage(&message);
-            if (message.message == WM_QUIT)
+            ImGui_ImplSDL3_ProcessEvent(&event);
+            if (event.type == SDL_EVENT_QUIT)
                 done = true;
+            else if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED && event.window.windowID == SDL_GetWindowID(window))
+                refreshWindowSize();
         }
         if (done)
             break;
-        if (::IsIconic(hwnd))
+        if ((SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) != 0)
         {
-            ::Sleep(10);
+            SDL_Delay(10);
             continue;
         }
 
-        LARGE_INTEGER perfNow;
-        ::QueryPerformanceCounter(&perfNow);
-        double frameDt = static_cast<double>(perfNow.QuadPart - perfLast.QuadPart) / static_cast<double>(perfFreq.QuadPart);
+        const Uint64 perfNow = SDL_GetPerformanceCounter();
+        double frameDt = static_cast<double>(perfNow - perfLast) / static_cast<double>(perfFreq);
         perfLast = perfNow;
         frameDt = clampFrameDt(frameDt);
         ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplWin32_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
         bool dirty = false;
         bool saveRequested = false;
+        bool savePlayRequested = false;
+        bool loadPlayRequested = false;
         static double materialTime = 0;
         materialTime += frameDt;
         dirty = drawInterface(
@@ -406,20 +365,22 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
             useGpu ? std::string() : gpu.failure(),
             notice,
             saveRequested,
+            savePlayRequested,
+            loadPlayRequested,
             gameMode);
         syncPrefabInstances(scene);
         if (refreshAssets(scene) || materialScrolling(scene))
             dirty = true;
         const bool escapePressed = ImGui::IsKeyPressed(ImGuiKey_Escape) && !ImGui::GetIO().WantTextInput;
         if (gameMode && !view.playing && escapePressed)
-            ::PostQuitMessage(0);
+            requestEditorQuit();
         if (view.playing && escapePressed && playState.result.empty())
-            playState.paused = !playState.paused;
+            view.paused = !view.paused;
         if (gameMode && !view.playing)
             drawTitleScreen(view);
 
         if (gStopPrompt)
-            playState.paused = true;
+            view.paused = true;
         if (gStopPrompt)
             ImGui::OpenPopup("Keep play changes");
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -428,6 +389,7 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
             ImGui::TextUnformatted("Keep the scene as it is now, or restore it to the moment Play was pressed?");
             if (ImGui::Button("Keep", ImVec2(120, 0)))
             {
+                sim.clearDisplay();
                 gKeptScene = scene.clone();
                 view.playing = false;
                 gStopPrompt = false;
@@ -442,7 +404,7 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
             }
             ImGui::EndPopup();
         }
-        updatePlayCursor(view.playing && !gStopPrompt && !playState.paused && playState.result.empty() && ::GetForegroundWindow() == g_hwnd);
+        updatePlayCursor(view.playing && !gStopPrompt && !view.paused && playState.result.empty() && editorWindowFocused());
 
         auto syncPlaySession = [&]() {
             if (view.playing == wasPlaying)
@@ -450,14 +412,17 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
             ++requested;
             if (view.playing)
             {
-                const bool paused = playState.paused;
+                const bool paused = view.paused;
                 savedLookFrom = view.lookFrom;
                 savedLookAt = view.lookAt;
                 playSnapshot = scene.clone();
                 playAccumulator = 0;
                 playState = {};
                 playState.room = 1;
-                playState.paused = paused;
+                view.paused = paused;
+                scene.particles().clear();
+                playRecorder.clear();
+                sim.begin();
                 armChaseCamera(chase, view);
                 startMusic();
             }
@@ -470,6 +435,7 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
                 }
                 else
                     scene = std::move(playSnapshot);
+                scene.particles().clear();
                 view.lookFrom = savedLookFrom;
                 view.lookAt = savedLookAt;
                 playState = {};
@@ -482,7 +448,7 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
         syncPlaySession();
 
         bool stepOnce = false;
-        if (view.playing && !gameMode && !playState.paused)
+        if (view.playing && !gameMode && !view.paused)
         {
             const ImGuiViewport *viewport = ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(
@@ -508,37 +474,62 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
         }
         if (restart)
         {
+            sim.clearDisplay();
             scene = playSnapshot.clone();
             playState = {};
             playState.room = 1;
             playAccumulator = 0;
+            scene.particles().clear();
+            playRecorder.clear();
+            sim.begin();
             armChaseCamera(chase, view);
-            for (const auto &object : scene.objects())
-            {
-                if (object->tag == "player")
-                {
-                    playState.playerId = object->id;
-                    break;
-                }
-            }
             placeChaseCamera(scene, view, chase, playState);
             ++requested;
         }
         syncPlaySession();
 
+        if (view.playing && (savePlayRequested || loadPlayRequested))
+        {
+            sim.clearDisplay();
+            const std::filesystem::path path = defaultPlaySessionPath();
+            if (savePlayRequested)
+            {
+                if (savePlaySession(path, scene, playState, sim.tick(), sim.lastLook(), playRecorder.commands()))
+                    notice = "Saved " + path.filename().string();
+                else
+                    notice = "Could not save play session";
+            }
+            if (loadPlayRequested)
+            {
+                PlaySessionInfo info;
+                if (loadPlaySession(path, scene, playState, info))
+                {
+                    playRecorder.clear();
+                    for (const Command &command : info.commands)
+                        playRecorder.record(command);
+                    sim.primeFromCurrent(info.tick, info.lastLook);
+                    applyPlayCamera(scene, view, chase, playState);
+                    notice = "Loaded " + path.filename().string();
+                }
+                else
+                    notice = "Could not load play session";
+            }
+            ++requested;
+        }
+
         bool cameraToggled = false;
         if (view.playing)
         {
-            const bool cDown = keyDown('C');
-            const bool allowC = !playState.paused && playState.result.empty()
-                && !ImGui::GetIO().WantTextInput && ::GetForegroundWindow() == g_hwnd;
+            const bool cDown = keyDown(SDLK_C);
+            const bool allowC = !view.paused && playState.result.empty()
+                && !ImGui::GetIO().WantTextInput && editorWindowFocused();
             if (allowC && cDown && !chase.cWasDown && chase.shot < 0)
             {
                 chase.firstPerson = !chase.firstPerson;
                 cameraToggled = true;
             }
             chase.cWasDown = cDown;
-            const bool vDown = keyDown('V');
+            const bool vDown = keyDown(SDLK_V);
             if (allowC && vDown && !chase.vWasDown && !scene.shots().empty())
             {
                 chase.blendFrom = view.lookFrom;
@@ -554,54 +545,74 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
             chase.vWasDown = vDown;
         }
 
-        if (view.playing && (!playState.paused || stepOnce))
+        if (view.playing && (!view.paused || stepOnce))
         {
             const bool textIdle = !ImGui::GetIO().WantTextInput;
-            const bool lookChanged = textIdle && !playState.paused && chase.shot < 0 && !chase.blending && updatePlayLook(chase);
+            const bool lookChanged = textIdle && !view.paused && chase.shot < 0 && !chase.blending && updatePlayLook(chase);
             if (chase.blending)
                 chase.blend = std::min(1.0, chase.blend + frameDt / 0.35);
             if (lookChanged || cameraToggled || chase.blending)
                 applyPlayCamera(scene, view, chase, playState);
-            const bool readKeys = textIdle && ::GetForegroundWindow() == g_hwnd;
+            const bool readKeys = textIdle && editorWindowFocused();
             const int steps = takePlaySteps(frameDt, timeScale, playAccumulator, stepOnce);
-            const bool resumeAfter = stepOnce && playState.paused;
+            const bool resumeAfter = stepOnce && view.paused;
             if (resumeAfter)
-                playState.paused = false;
-            bool stepped = false;
+                view.paused = false;
+            Vec3 look = view.lookAt - view.lookFrom;
+            if (length(look) < 1e-8)
+                look = Vec3(0, 0, -1);
+            else
+                look = normalize(look);
             for (int step = 0; step < steps; ++step)
             {
                 PlayInput input;
                 if (readKeys)
                     input = readPlayInput();
-                const int scoreBefore = playState.score;
-                const std::string messageBefore = playState.message;
-                const std::string resultBefore = playState.result;
-                Vec3 look = view.lookAt - view.lookFrom;
-                if (length(look) < 1e-8)
-                    look = Vec3(0, 0, -1);
-                else
-                    look = normalize(look);
-                stepPlay(scene, input, look, static_cast<float>(kPlayStep), playState);
-                applyPlayCamera(scene, view, chase, playState);
-                const bool scoreUp = playState.score > scoreBefore;
-                const bool messageChanged = playState.message != messageBefore && !playState.message.empty();
-                const bool becameWon = playState.result == "won" && resultBefore != "won";
-                if (scoreUp || messageChanged || becameWon)
-                    playScoreBeep(scoreUp, playState.message, becameWon, view.lookFrom, playState.eventAt);
-                stepped = true;
+                sim.enqueue(commandFromPlayInput(input, sim.nextTick() + static_cast<SimTick>(step), look));
             }
+            sim.take(steps);
+            const double alpha = (stepOnce || view.paused) ? 1.0 : playAccumulator / kPlayStep;
+            sim.applyDisplay(alpha);
+            if (view.renderStream)
+            {
+                double focusX = view.lookFrom.x;
+                double focusZ = view.lookFrom.z;
+                if (playState.playerId != kInvalidEntityId)
+                {
+                    if (Object *player = scene.find(playState.playerId))
+                    {
+                        const Vec3 at = player->displayWorldPosition();
+                        focusX = at.x;
+                        focusZ = at.z;
+                    }
+                }
+                view.renderStream->setFocus(focusX, focusZ);
+                view.renderStream->pump(scene);
+            }
+            applyPlayCamera(scene, view, chase, playState);
+            playSimEvents(scene, sim.events(), view.lookFrom);
             if (resumeAfter && playState.result.empty())
-                playState.paused = true;
-            if (stepped || lookChanged || cameraToggled || chase.blending)
+                view.paused = true;
+            sim.refreshHud();
+            if (steps > 0 || lookChanged || cameraToggled || chase.blending || !view.paused)
                 ++requested;
             if (chase.blend >= 1.0)
                 chase.blending = false;
+        }
+        else if (view.playing)
+            sim.refreshHud();
+
+        if (view.playing)
+        {
+            scene.advanceParticles(frameDt);
+            if (!scene.particles().empty())
+                ++requested;
         }
 
         const char *cameraLabel = "";
         if (chase.shot >= 0 && chase.shot < static_cast<int>(scene.shots().size()))
             cameraLabel = scene.shots()[static_cast<size_t>(chase.shot)].name.c_str();
-        drawPlayHud(scene, view, playState, timeScale, chase.firstPerson, cameraLabel);
+        drawPlayHud(sim.snapshot(), view, timeScale, chase.firstPerson, cameraLabel);
         if (dirty)
             ++requested;
 
@@ -682,22 +693,22 @@ int runEditor(int width, int height, int samples, int depth, bool gameMode)
         glClearColor(0.12f, 0.12f, 0.13f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        ::SwapBuffers(glWindow.dc);
+        SDL_GL_SwapWindow(window);
+        FrameMark;
     }
 
     gpu.shutdown();
+    shutdownPlayInput();
+    updatePlayCursor(false);
 
     glDeleteTextures(1, &texture);
     ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplWin32_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
-    wglMakeCurrent(nullptr, nullptr);
-    ::ReleaseDC(hwnd, glWindow.dc);
-    wglDeleteContext(g_glContext);
-    g_glContext = nullptr;
-    g_hwnd = nullptr;
-    ::DestroyWindow(hwnd);
-    ::UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
+    SDL_GL_DestroyContext(glContext);
+    SDL_DestroyWindow(window);
+    g_window = nullptr;
+    SDL_Quit();
     return 0;
 }
 

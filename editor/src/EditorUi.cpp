@@ -29,6 +29,8 @@ bool drawInterface(
     const std::string &gpuFailure,
     std::string &notice,
     bool &saveRequested,
+    bool &savePlayRequested,
+    bool &loadPlayRequested,
     bool gameMode)
 {
     bool dirty = false;
@@ -60,7 +62,7 @@ bool drawInterface(
             leaving.fov = view.fov;
         }
         view.selectedCamera = index;
-        view.selectedObject = -1;
+        view.selectedObject = kInvalidEntityId;
         view.alsoSelected.clear();
         view.selectedLight = -1;
         if (index < 0)
@@ -127,19 +129,20 @@ bool drawInterface(
                 notice = "Select a mesh in Assets";
             else
             {
-                auto mesh = std::make_unique<Mesh>();
+                Object *mesh = scene.addMesh();
                 std::string error;
                 if (!mesh->load(gAssetPath, error))
                 {
+                    scene.remove(mesh->id());
                     notice = error;
                 }
                 else
                 {
-                    mesh->name = std::filesystem::path(gAssetPath).stem().string();
-                    if (mesh->name.empty())
-                        mesh->name = "Mesh";
+                    mesh->name() = std::filesystem::path(gAssetPath).stem().string();
+                    if (mesh->name().empty())
+                        mesh->name() = "Mesh";
                     pushEditorHistory(scene, view);
-                    view.selectedObject = scene.add(std::move(mesh));
+                    view.selectedObject = mesh->id();
                     view.selectedLight = -1;
                     dirty = true;
                 }
@@ -151,44 +154,44 @@ bool drawInterface(
             PointLight light(Vec3(0, 4, 2), Vec3(1, 1, 1), 1, 0.02);
             scene.addLight(light);
             view.selectedLight = static_cast<int>(scene.lights().size()) - 1;
-            view.selectedObject = -1;
+            view.selectedObject = kInvalidEntityId;
             scene.lights().back().name = "Light " + std::to_string(view.selectedLight + 1);
             dirty = true;
         }
         if (ImGui::MenuItem("Camera", "Ctrl+Shift+C"))
             addCameraFromView();
-        int prefabSource = -1;
-        if (view.selectedObject >= 0)
+        EntityId prefabSource = kInvalidEntityId;
+        if (view.selectedObject != kInvalidEntityId)
         {
-            if (const Hittable *selected = scene.find(view.selectedObject))
+            if (const Object *selected = scene.find(view.selectedObject))
             {
-                if (!selected->prefab.empty())
-                    prefabSource = selected->id;
-                else if (!selected->instanceOf.empty())
+                if (!selected->prefab().empty())
+                    prefabSource = selected->id();
+                else if (!selected->instanceOf().empty())
                 {
                     for (const auto &candidate : scene.objects())
                     {
-                        if (candidate->prefab == selected->instanceOf)
+                        if (candidate->prefab() == selected->instanceOf())
                         {
-                            prefabSource = candidate->id;
+                            prefabSource = candidate->id();
                             break;
                         }
                     }
                 }
             }
         }
-        if (prefabSource < 0)
+        if (prefabSource == kInvalidEntityId)
         {
             for (const auto &candidate : scene.objects())
             {
-                if (!candidate->prefab.empty())
+                if (!candidate->prefab().empty())
                 {
-                    prefabSource = candidate->id;
+                    prefabSource = candidate->id();
                     break;
                 }
             }
         }
-        if (ImGui::MenuItem("Prefab", nullptr, false, prefabSource >= 0))
+        if (ImGui::MenuItem("Prefab", nullptr, false, prefabSource != kInvalidEntityId))
         {
             pushEditorHistory(scene, view);
             view.selectedObject = placePrefabInstance(scene, prefabSource);
@@ -205,14 +208,14 @@ bool drawInterface(
         ImGui::OpenPopup("edit_menu");
     if (ImGui::BeginPopup("edit_menu"))
     {
-        const bool canDuplicate = !view.playing && view.selectedObject >= 0;
+        const bool canDuplicate = !view.playing && view.selectedObject != kInvalidEntityId;
         if (ImGui::MenuItem("Duplicate", nullptr, false, canDuplicate))
         {
             pushEditorHistory(scene, view);
             duplicateSelection(scene, view);
             dirty = true;
         }
-        const bool canDelete = !view.playing && (view.selectedObject >= 0 || view.selectedLight >= 0 || view.selectedCamera >= 0);
+        const bool canDelete = !view.playing && (view.selectedObject != kInvalidEntityId || view.selectedLight >= 0 || view.selectedCamera >= 0);
         if (ImGui::MenuItem("Delete", "Del", false, canDelete))
         {
             pushEditorHistory(scene, view);
@@ -221,19 +224,19 @@ bool drawInterface(
         }
         if (ImGui::MenuItem("Save PNG", nullptr, false, hasImage))
             saveRequested = true;
-        const bool canPrefab = !view.playing && view.selectedObject >= 0;
+        const bool canPrefab = !view.playing && view.selectedObject != kInvalidEntityId;
         if (ImGui::MenuItem("Make prefab", nullptr, false, canPrefab))
         {
-            if (Hittable *selected = scene.find(view.selectedObject))
+            if (Object *selected = scene.find(view.selectedObject))
             {
-                selected->instanceOf.clear();
-                selected->prefab = selected->name.empty() ? "Prefab" : selected->name;
+                selected->instanceOf().clear();
+                selected->prefab() = selected->name().empty() ? "Prefab" : selected->name();
                 dirty = true;
             }
         }
         ImGui::EndPopup();
     }
-    if (!view.playing && textIdle && (view.selectedObject >= 0 || view.selectedLight >= 0 || view.selectedCamera >= 0) && ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive())
+    if (!view.playing && textIdle && (view.selectedObject != kInvalidEntityId || view.selectedLight >= 0 || view.selectedCamera >= 0) && ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive())
     {
         pushEditorHistory(scene, view);
         deleteSelection(scene, view);
@@ -260,6 +263,10 @@ bool drawInterface(
                     notice = error;
             }
         }
+        if (ImGui::MenuItem("Save play session", nullptr, false, view.playing))
+            savePlayRequested = true;
+        if (ImGui::MenuItem("Load play session", nullptr, false, view.playing))
+            loadPlayRequested = true;
         if (ImGui::MenuItem("Load scene", nullptr, false, !view.playing))
         {
             std::filesystem::path path;
@@ -280,7 +287,7 @@ bool drawInterface(
                     view.selectedCamera = -1;
                     view.aperture = camera.aperture;
                     view.focusDistance = camera.focusDistance > 1e-4 ? camera.focusDistance : length(camera.lookAt - camera.lookFrom);
-                    view.selectedObject = -1;
+                    view.selectedObject = kInvalidEntityId;
                     view.alsoSelected.clear();
                     view.selectedLight = -1;
                     notice = "Loaded " + path.filename().string();
@@ -322,6 +329,9 @@ bool drawInterface(
         dirty |= ImGui::SliderInt("Mesh stack", &settings.meshStackLimit, 2, kGlslMeshStackMax);
         dirty |= editDouble("Bloom threshold", settings.bloomThreshold, 0.01, 0.5, 2);
         dirty |= editDouble("Bloom strength", settings.bloomStrength, 0.01, 0, 2);
+        dirty |= editDouble("View distance", settings.viewDistance, 10, 20, 4000);
+        dirty |= ImGui::SliderInt("Shadow map", &settings.shadowMapSize, 256, 2048);
+        dirty |= editDouble("Particle density", settings.particleDensity, 0.05, 0, 2);
         ImGui::TextDisabled("Samples is the still-image grid. Play draws one sample.");
         ImGui::Separator();
         ImGui::TextUnformatted("Play");
@@ -362,18 +372,19 @@ bool drawInterface(
         if (gCaptureBind != 0)
         {
             int found = 0;
-            BYTE keys[256] = {};
-            if (::GetKeyboardState(keys))
+            int keyCount = 0;
+            const bool *keys = SDL_GetKeyboardState(&keyCount);
+            if (keys != nullptr)
             {
-                for (int vk = 8; vk < 256; ++vk)
+                for (int sc = SDL_SCANCODE_A; sc < keyCount; ++sc)
                 {
-                    if (vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON || vk == VK_XBUTTON1 || vk == VK_XBUTTON2)
+                    if (!keys[sc] || sc == SDL_SCANCODE_ESCAPE)
                         continue;
-                    if ((keys[vk] & 0x80) != 0)
-                    {
-                        found = vk;
-                        break;
-                    }
+                    const SDL_Keycode key = SDL_GetKeyFromScancode(static_cast<SDL_Scancode>(sc), SDL_KMOD_NONE, false);
+                    if (key == SDLK_UNKNOWN)
+                        continue;
+                    found = static_cast<int>(key);
+                    break;
                 }
             }
             if (found != 0)
@@ -490,7 +501,7 @@ bool drawInterface(
         std::string folded;
         bool foldReady = false;
     };
-    static std::unordered_map<int, OutlinerRow> objectRows;
+    static std::unordered_map<EntityId, OutlinerRow> objectRows;
     static std::unordered_map<int, OutlinerRow> lightRows;
     static std::unordered_map<int, OutlinerRow> cameraRows;
     const bool filtering = outlinerFilter[0] != '\0';
@@ -532,27 +543,29 @@ bool drawInterface(
     for (const auto &object : scene.objects())
     {
         const char *kind = object->kind();
-        OutlinerRow &row = objectRows[object->id];
-        if (row.name != object->name || row.kind != kind)
+        OutlinerRow &row = objectRows[object->id()];
+        if (row.name != object->name() || row.kind != kind)
         {
-            row.name = object->name;
+            row.name = object->name();
             row.kind = kind;
-            row.text = object->name.empty() ? row.kind : object->name;
+            row.text = object->name().empty() ? row.kind : object->name();
             row.folded.clear();
             row.foldReady = false;
         }
         if (!matchesOutliner(row))
             continue;
-        ImGui::PushID(object->id);
-        if (ImGui::Selectable(row.text.c_str(), objectChosen(view, object->id)))
+        ImGui::PushID(static_cast<int>(object->id() & 0xffffffffu));
+        ImGui::PushID(static_cast<int>(object->id() >> 32));
+        if (ImGui::Selectable(row.text.c_str(), objectChosen(view, object->id())))
         {
             const bool extend = ImGui::GetIO().KeyShift;
-            if (extend || !objectChosen(view, object->id))
+            if (extend || !objectChosen(view, object->id()))
             {
-                chooseObject(view, object->id, extend);
+                chooseObject(view, object->id(), extend);
                 dirty = true;
             }
         }
+        ImGui::PopID();
         ImGui::PopID();
     }
     ImGui::SeparatorText("Lights");
@@ -565,9 +578,9 @@ bool drawInterface(
         ImGui::PushID(static_cast<int>(index) + 10000);
         if (ImGui::Selectable(row.text.c_str(), view.selectedLight == static_cast<int>(index)))
         {
-            const bool clearHighlight = view.selectedObject >= 0;
+            const bool clearHighlight = view.selectedObject != kInvalidEntityId;
             view.selectedLight = static_cast<int>(index);
-            view.selectedObject = -1;
+            view.selectedObject = kInvalidEntityId;
             view.alsoSelected.clear();
             dirty = clearHighlight;
         }
@@ -617,11 +630,11 @@ bool drawInterface(
         {
             const Camera shot = viewCamera(view, static_cast<double>(imageWidth) / static_cast<double>(imageHeight));
             if (view.showColliders)
-                drawColliders(scene, shot, -1, g_viewImageMin.x, g_viewImageMin.y, g_viewImageMax.x, g_viewImageMax.y);
+                drawColliders(scene, shot, kInvalidEntityId, g_viewImageMin.x, g_viewImageMin.y, g_viewImageMax.x, g_viewImageMax.y);
             if (view.showBounceRays)
                 drawBounceRays(scene, shot, g_viewImageMin.x, g_viewImageMin.y, g_viewImageMax.x, g_viewImageMax.y);
         }
-        if (!view.playing && view.selectedObject >= 0 && imageWidth > 0 && imageHeight > 0)
+        if (!view.playing && view.selectedObject != kInvalidEntityId && imageWidth > 0 && imageHeight > 0)
         {
             const Camera shot = viewCamera(view, static_cast<double>(imageWidth) / static_cast<double>(imageHeight));
             drawGizmo(scene, view.selectedObject, view.gizmoMode, shot, g_viewImageMin.x, g_viewImageMin.y, g_viewImageMax.x, g_viewImageMax.y);
@@ -720,12 +733,12 @@ bool drawInterface(
     }
 
     ImGui::SeparatorText("Selection");
-    if (view.selectedObject >= 0)
+    if (view.selectedObject != kInvalidEntityId)
     {
-        if (Hittable *object = scene.find(view.selectedObject))
+        if (Object *object = scene.find(view.selectedObject))
             dirty |= drawObjectSettings(*object, scene);
         else
-            view.selectedObject = -1;
+            view.selectedObject = kInvalidEntityId;
     }
     else if (view.selectedLight >= 0 && static_cast<size_t>(view.selectedLight) < scene.lights().size())
     {

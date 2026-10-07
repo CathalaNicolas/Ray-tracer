@@ -2,7 +2,7 @@
 
 #include "Constants.hpp"
 #include "EngineSettings.hpp"
-#include "Hittable.hpp"
+#include "Object.hpp"
 #include "PlayDetail.hpp"
 #include "SceneDebug.hpp"
 
@@ -281,7 +281,7 @@ void drawFrustum(ImDrawList *draw, const ViewBasis &basis, const Camera &shot)
 
 }
 
-void drawColliders(const Scene &scene, const Camera &camera, int playerId, float x0, float y0, float x1, float y1)
+void drawColliders(const Scene &scene, const Camera &camera, EntityId playerId, float x0, float y0, float x1, float y1)
 {
     if (x1 - x0 < 1.0f || y1 - y0 < 1.0f)
         return;
@@ -297,7 +297,7 @@ void drawColliders(const Scene &scene, const Camera &camera, int playerId, float
         }
         if (sketch.kind == ColliderSketch::Kind::Sphere)
         {
-            const bool player = object->id == playerId || sketch.player;
+            const bool player = object->id() == playerId || sketch.player;
             if (player)
                 drawSphereCircle(draw, basis, sketch.center, sketch.radius, IM_COL32(255, 176, 46, 255));
             else if (play_detail::isSolid(*object, playerId))
@@ -363,12 +363,12 @@ namespace
 constexpr double kGizmoLength = 0.85;
 constexpr float kGizmoPick = 8.0f;
 
-Vec3 gizmoOrigin(const Hittable &object)
+Vec3 gizmoOrigin(const Object &object)
 {
     return object.worldPosition();
 }
 
-bool gizmoUsable(const Hittable &object, int mode)
+bool gizmoUsable(const Object &object, int mode)
 {
     // 1 = rotate (mesh Euler or plane normal tip), 2 = scale (mesh/sphere).
     if (mode == 1)
@@ -502,17 +502,17 @@ void strokeGizmo(ImDrawList *draw, const ViewBasis &basis, const Vec3 &origin, i
 
 }
 
-void drawGizmo(const Scene &scene, int objectId, int mode, const Camera &camera, float x0, float y0, float x1, float y1)
+void drawGizmo(const Scene &scene, EntityId objectId, int mode, const Camera &camera, float x0, float y0, float x1, float y1)
 {
-    const Hittable *object = scene.find(objectId);
+    const Object *object = scene.find(objectId);
     if (object == nullptr || !gizmoUsable(*object, mode) || x1 - x0 < 1.0f || y1 - y0 < 1.0f)
         return;
     strokeGizmo(ImGui::GetWindowDrawList(), basisFrom(camera, x0, y0, x1, y1), gizmoOrigin(*object), mode);
 }
 
-int pickGizmo(const Scene &scene, int objectId, int mode, const Camera &camera, float x0, float y0, float x1, float y1, float mouseX, float mouseY)
+int pickGizmo(const Scene &scene, EntityId objectId, int mode, const Camera &camera, float x0, float y0, float x1, float y1, float mouseX, float mouseY)
 {
-    const Hittable *object = scene.find(objectId);
+    const Object *object = scene.find(objectId);
     if (object == nullptr || !gizmoUsable(*object, mode) || x1 - x0 < 1.0f || y1 - y0 < 1.0f)
         return 0;
     int axis = 0;

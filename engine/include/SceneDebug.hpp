@@ -1,5 +1,6 @@
 #pragma once
 
+#include "EntityId.hpp"
 #include "Vec3.hpp"
 
 #include <string>
@@ -31,4 +32,4 @@ struct BounceRay
 // Same test as the GPU mirror bounce. Fills the dump text and one segment per light-to-mirror and mirror-to-receiver leg.
 void mirrorBounceDebug(const Scene &scene, std::string &text, std::vector<BounceRay> &rays);
 
-std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 &lookFrom, const Vec3 &lookAt, double fovDegrees, double aperture, double focusDistance, int width, int height, int samples, int depth, int selectedObject, int selectedLight);
+std::string sceneDebugText(const Scene &scene, const Camera &camera, const Vec3 &lookFrom, const Vec3 &lookAt, double fovDegrees, double aperture, double focusDistance, int width, int height, int samples, int depth, EntityId selectedObject, int selectedLight);

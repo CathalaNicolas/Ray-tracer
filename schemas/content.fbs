@@ -1,0 +1,27 @@
+namespace content;
+
+table Item {
+  id:uint64;
+  name:string;
+}
+
+table CreatureTemplate {
+  id:uint64;
+  name:string;
+  health:int32;
+}
+
+table Zone {
+  id:uint64;
+  name:string;
+  map_id:uint64;
+}
+
+table Catalog {
+  items:[Item];
+  creatures:[CreatureTemplate];
+  zones:[Zone];
+}
+
+root_type Catalog;
+file_identifier "RTCT";

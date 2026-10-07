@@ -1,16 +1,18 @@
 #pragma once
 
 #include "EngineSettings.hpp"
-#include "Hittable.hpp"
+#include "Object.hpp"
 #include "Light.hpp"
+#include "Terrain.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <iostream>
+#include <entt/entity/registry.hpp>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct Particle
@@ -31,60 +33,24 @@ struct SceneCamera
 };
 
 void syncPrefabInstances(Scene &scene);
-int placePrefabInstance(Scene &scene, int sourceId);
+EntityId placePrefabInstance(Scene &scene, EntityId sourceId);
 
 class Scene
 {
 public:
-    Scene() = default;
+    Scene();
     Scene(const Scene &) = delete;
     Scene &operator=(const Scene &) = delete;
     Scene(Scene &&other) noexcept;
     Scene &operator=(Scene &&other) noexcept;
 
-    int add(std::unique_ptr<Hittable> object)
-    {
-        if (!object)
-            return -1;
-        if (object->id <= 0)
-            object->id = nextId_++;
-        else if (object->id >= nextId_)
-            nextId_ = object->id + 1;
-        int id = object->id;
-        object->bindScene(this);
-        Hittable *raw = object.get();
-        objects_.push_back(std::move(object));
-        byId_[id] = raw;
-        bumpParentFrames();
-        return id;
-    }
-
-    Hittable *find(int id)
-    {
-        const auto it = byId_.find(id);
-        return it == byId_.end() ? nullptr : it->second;
-    }
-
-    const Hittable *find(int id) const
-    {
-        const auto it = byId_.find(id);
-        return it == byId_.end() ? nullptr : it->second;
-    }
-
-    bool remove(int id)
-    {
-        for (auto it = objects_.begin(); it != objects_.end(); ++it)
-        {
-            if ((*it)->id == id)
-            {
-                byId_.erase(id);
-                objects_.erase(it);
-                bumpParentFrames();
-                return true;
-            }
-        }
-        return false;
-    }
+    Object *addSphere(const Vec3 &center, double radius, const Material &material, EntityId id = kInvalidEntityId);
+    Object *addPlane(const Vec3 &point, const Vec3 &normal, const Material &material, EntityId id = kInvalidEntityId);
+    Object *addMesh(EntityId id = kInvalidEntityId);
+    Object *addTerrain(EntityId id = kInvalidEntityId);
+    Object *find(EntityId id);
+    const Object *find(EntityId id) const;
+    bool remove(EntityId id);
 
     // Invalidate every object's parentFrame() cache. Call after poses or parents change.
     void bumpParentFrames() const
@@ -96,27 +62,7 @@ public:
 
     std::uint32_t parentFrameEpoch() const { return parentFrameEpoch_; }
 
-    Scene clone() const
-    {
-        Scene copy;
-        copy.lights_ = lights_;
-        copy.ambient_ = ambient_;
-        copy.horizon_ = horizon_;
-        copy.zenith_ = zenith_;
-        copy.environment_ = environment_;
-        copy.exposure_ = exposure_;
-        copy.fogColor_ = fogColor_;
-        copy.fogDensity_ = fogDensity_;
-        copy.shots_ = shots_;
-        copy.nextId_ = nextId_;
-        for (const auto &object : objects_)
-        {
-            copy.objects_.push_back(object->clone());
-            copy.objects_.back()->bindScene(&copy);
-        }
-        copy.rebuildIndex();
-        return copy;
-    }
+    Scene clone() const;
 
     void addLight(const PointLight &light)
     {
@@ -154,12 +100,12 @@ public:
     {
         bool found = false;
         double closest = tMax;
-        for (const auto &object : objects_)
+        for (const Object *object : objects())
         {
             HitRecord candidate;
             if (object->intersect(ray, tMin, closest, candidate))
             {
-                candidate.objectId = object->id;
+                candidate.objectId = object->id();
                 found = true;
                 closest = candidate.t;
                 hit = candidate;
@@ -175,28 +121,28 @@ public:
         return horizon_ * (1.0 - t) + zenith_ * t;
     }
 
-    const std::vector<std::unique_ptr<Hittable>> &objects() const { return objects_; }
+    const std::vector<Object *> &objects() const;
+    EntityId nextId() const { return nextId_; }
+    EntityId sessionPrefix() const { return sessionPrefix_; }
+    // Soft: only advances the counter when `next` shares this scene's session prefix.
+    void setNextId(EntityId next);
+    // Play-session restore: adopt the saved prefix and counter so later spawns match.
+    void restoreIdState(EntityId next);
+    // After `loadScene` moves a parsed scene in, restore this process's session issuer.
+    void retainSessionIds(EntityId prefix, EntityId next);
+    void markPhysicsDirty(EntityId id);
+    void clearPhysicsDirty();
+    const std::unordered_set<EntityId> &physicsDirty() const { return physicsDirty_; }
+    entt::registry &registry() { return registry_; }
+    const entt::registry &registry() const { return registry_; }
+    entt::entity entity(EntityId id) const;
     std::vector<PointLight> &lights() { return lights_; }
     const std::vector<PointLight> &lights() const { return lights_; }
     std::vector<SceneCamera> &shots() { return shots_; }
     const std::vector<SceneCamera> &shots() const { return shots_; }
     std::vector<Particle> &particles() { return particles_; }
     const std::vector<Particle> &particles() const { return particles_; }
-    void addParticle(const Particle &particle)
-    {
-        const size_t cap = static_cast<size_t>(engineSettings().maxParticles);
-        if (particles_.size() >= cap)
-        {
-            static bool warned = false;
-            if (!warned)
-            {
-                std::cerr << "particle cap (" << cap << ") reached; later particles are dropped\n";
-                warned = true;
-            }
-            return;
-        }
-        particles_.push_back(particle);
-    }
+    void addParticle(const Particle &particle);
     void advanceParticles(double dt)
     {
         for (Particle &particle : particles_)
@@ -221,11 +167,21 @@ public:
     double exposure() const { return exposure_; }
     const Vec3 &fogColor() const { return fogColor_; }
     double fogDensity() const { return fogDensity_; }
+    MapDef &map() { return map_; }
+    const MapDef &map() const { return map_; }
+    std::vector<LiquidVolume> &liquids() { return liquids_; }
+    const std::vector<LiquidVolume> &liquids() const { return liquids_; }
 
 private:
-    int nextId_ = 1;
-    std::vector<std::unique_ptr<Hittable>> objects_;
-    std::unordered_map<int, Hittable *> byId_;
+    friend class Object;
+    EntityId sessionPrefix_ = 0;
+    EntityId nextId_ = 1;
+    entt::registry registry_;
+    std::unordered_map<EntityId, entt::entity> entities_;
+    std::unordered_map<EntityId, std::unique_ptr<Object>> handles_;
+    std::vector<EntityId> order_;
+    mutable std::vector<Object *> objectView_;
+    std::unordered_set<EntityId> physicsDirty_;
     std::vector<PointLight> lights_;
     std::vector<SceneCamera> shots_;
     std::vector<Particle> particles_;
@@ -236,61 +192,11 @@ private:
     double exposure_ = 1;
     Vec3 fogColor_{0.75, 0.8, 0.85};
     double fogDensity_ = 0;
+    MapDef map_;
+    std::vector<LiquidVolume> liquids_;
     mutable std::uint32_t parentFrameEpoch_ = 1;
 
-    void rebuildIndex()
-    {
-        byId_.clear();
-        byId_.reserve(objects_.size());
-        for (const auto &object : objects_)
-            byId_[object->id] = object.get();
-    }
-
-    void adopt()
-    {
-        for (const auto &object : objects_)
-            object->bindScene(this);
-        rebuildIndex();
-        bumpParentFrames();
-    }
+    Object *create(EntityId requested);
+    void rebuildHandles();
 };
 
-inline Scene::Scene(Scene &&other) noexcept
-    : nextId_(other.nextId_),
-      objects_(std::move(other.objects_)),
-      lights_(std::move(other.lights_)),
-      ambient_(other.ambient_),
-      horizon_(other.horizon_),
-      zenith_(other.zenith_),
-      environment_(std::move(other.environment_)),
-      exposure_(other.exposure_),
-      fogColor_(other.fogColor_),
-      fogDensity_(other.fogDensity_),
-      shots_(std::move(other.shots_)),
-      particles_(std::move(other.particles_))
-{
-    other.byId_.clear();
-    adopt();
-}
-
-inline Scene &Scene::operator=(Scene &&other) noexcept
-{
-    if (this != &other)
-    {
-        nextId_ = other.nextId_;
-        objects_ = std::move(other.objects_);
-        lights_ = std::move(other.lights_);
-        ambient_ = other.ambient_;
-        horizon_ = other.horizon_;
-        zenith_ = other.zenith_;
-        environment_ = std::move(other.environment_);
-        exposure_ = other.exposure_;
-        fogColor_ = other.fogColor_;
-        fogDensity_ = other.fogDensity_;
-        shots_ = std::move(other.shots_);
-        particles_ = std::move(other.particles_);
-        other.byId_.clear();
-        adopt();
-    }
-    return *this;
-}

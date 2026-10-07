@@ -3,60 +3,97 @@
 #include "DebugDraw.hpp"
 #include "Sound.hpp"
 
+#include <SDL3/SDL.h>
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
 namespace ed
 {
-
-// ShowCursor is a process-wide count. One call moves it by one, so repeat until
-// the returned count is in range. A probe that was already in range is undone.
-void matchCursorVisible(bool visible)
+namespace
 {
-    if (visible)
+
+SDL_Gamepad *g_gamepad = nullptr;
+
+SDL_Gamepad *playGamepad()
+{
+    if (g_gamepad != nullptr && SDL_GamepadConnected(g_gamepad))
+        return g_gamepad;
+    if (g_gamepad != nullptr)
     {
-        int count = ::ShowCursor(TRUE);
-        if (count > 0)
-            ::ShowCursor(FALSE);
-        else
-        {
-            while (count < 0)
-                count = ::ShowCursor(TRUE);
-        }
-        return;
+        SDL_CloseGamepad(g_gamepad);
+        g_gamepad = nullptr;
     }
-    int count = ::ShowCursor(FALSE);
-    if (count < -1)
-        ::ShowCursor(TRUE);
-    else
+    int count = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&count);
+    if (ids != nullptr && count > 0)
+        g_gamepad = SDL_OpenGamepad(ids[0]);
+    SDL_free(ids);
+    return g_gamepad;
+}
+
+float gamepadAxis(SDL_Gamepad *pad, SDL_GamepadAxis axis, float deadzone)
+{
+    const float value = static_cast<float>(SDL_GetGamepadAxis(pad, axis)) / 32767.0f;
+    if (value > -deadzone && value < deadzone)
+        return 0.0f;
+    return value;
+}
+
+void burstParticles(Scene &scene, const Vec3 &at, const Vec3 &color)
+{
+    for (int index = 0; index < 8; ++index)
     {
-        while (count >= 0)
-            count = ::ShowCursor(FALSE);
+        const double angle = index * 0.78539816339;
+        Particle particle;
+        particle.position = at;
+        particle.velocity = Vec3(std::cos(angle), 1.4, std::sin(angle)) * 1.6;
+        particle.color = color;
+        particle.life = 0.45;
+        particle.size = 0.07;
+        scene.addParticle(particle);
+    }
+}
+
+} // namespace
+
+void shutdownPlayInput()
+{
+    if (g_gamepad != nullptr)
+    {
+        SDL_CloseGamepad(g_gamepad);
+        g_gamepad = nullptr;
     }
 }
 
 void updatePlayCursor(bool capture)
 {
     static bool held = false;
+    ImGuiIO &io = ImGui::GetIO();
     if (capture)
     {
-        RECT client;
-        if (g_hwnd != nullptr && ::GetClientRect(g_hwnd, &client))
+        io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+        if (g_window != nullptr)
         {
-            POINT topLeft{client.left, client.top};
-            POINT bottomRight{client.right, client.bottom};
-            ::ClientToScreen(g_hwnd, &topLeft);
-            ::ClientToScreen(g_hwnd, &bottomRight);
-            RECT screen{topLeft.x, topLeft.y, bottomRight.x, bottomRight.y};
-            ::ClipCursor(&screen);
+            SDL_SetWindowMouseGrab(g_window, true);
+            SDL_SetWindowRelativeMouseMode(g_window, true);
         }
-        matchCursorVisible(false);
+        SDL_HideCursor();
         held = true;
         return;
     }
     if (held)
     {
-        ::ClipCursor(nullptr);
+        if (g_window != nullptr)
+        {
+            SDL_SetWindowRelativeMouseMode(g_window, false);
+            SDL_SetWindowMouseGrab(g_window, false);
+        }
+        io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
         held = false;
     }
-    matchCursorVisible(true);
+    SDL_ShowCursor();
 }
 
 
@@ -68,8 +105,8 @@ void armChaseCamera(ChaseCamera &chase, const ViewState &view)
     chase.distance = 4.5;
     chase.ready = true;
     chase.firstPerson = false;
-    chase.cWasDown = keyDown('C');
-    chase.vWasDown = keyDown('V');
+    chase.cWasDown = keyDown(SDLK_C);
+    chase.vWasDown = keyDown(SDLK_V);
     chase.shot = -1;
     chase.blending = false;
     chase.blend = 1;
@@ -98,19 +135,45 @@ PlayInput readPlayInput()
     input.moveX = right;
     input.jump = keyDown(gKeyJump) || keyDown(gKeyJumpAlt);
     input.use = keyDown(gKeyUse);
+    if (SDL_Gamepad *pad = playGamepad())
+    {
+        const float ax = gamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, 0.2f);
+        const float ay = gamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, 0.2f);
+        input.moveX = std::clamp(input.moveX + ax, -1.0f, 1.0f);
+        input.moveZ = std::clamp(input.moveZ - ay, -1.0f, 1.0f);
+        if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_SOUTH))
+            input.jump = true;
+        if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_WEST))
+            input.use = true;
+    }
     return input;
 }
 
 bool updatePlayLook(ChaseCamera &chase)
 {
-    if (!chase.ready || ::GetForegroundWindow() != g_hwnd)
+    if (!chase.ready || !editorWindowFocused())
         return false;
+    bool changed = false;
     const ImGuiIO &io = ImGui::GetIO();
-    if (io.MouseDelta.x == 0.0f && io.MouseDelta.y == 0.0f)
-        return false;
-    chase.yaw -= static_cast<double>(io.MouseDelta.x) * 0.005;
-    chase.pitch = std::clamp(chase.pitch - static_cast<double>(io.MouseDelta.y) * 0.005, -1.2, 1.2);
-    return true;
+    if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)
+    {
+        chase.yaw -= static_cast<double>(io.MouseDelta.x) * 0.005;
+        chase.pitch = std::clamp(chase.pitch - static_cast<double>(io.MouseDelta.y) * 0.005, -1.2, 1.2);
+        changed = true;
+    }
+    if (SDL_Gamepad *pad = playGamepad())
+    {
+        const float rx = gamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, 0.2f);
+        const float ry = gamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, 0.2f);
+        if (rx != 0.0f || ry != 0.0f)
+        {
+            const double dt = static_cast<double>(io.DeltaTime);
+            chase.yaw -= static_cast<double>(rx) * 2.0 * dt;
+            chase.pitch = std::clamp(chase.pitch - static_cast<double>(ry) * 2.0 * dt, -1.2, 1.2);
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 bool placeChaseCamera(Scene &scene, ViewState &view, const ChaseCamera &chase, const PlayState &state)
@@ -123,15 +186,15 @@ bool placeChaseCamera(Scene &scene, ViewState &view, const ChaseCamera &chase, c
         view.fov = shot.fov;
         return true;
     }
-    if (!chase.ready || state.playerId < 0)
+    if (!chase.ready || state.playerId == kInvalidEntityId)
         return false;
-    Hittable *player = scene.find(state.playerId);
+    Object *player = scene.find(state.playerId);
     if (player == nullptr || player->bodyRadius() <= 0)
         return false;
     const double cosPitch = std::cos(chase.pitch);
     const double sinPitch = std::sin(chase.pitch);
-    const Vec3 center = player->worldPosition();
-    const double radius = player->localScale();
+    const Vec3 center = player->displayWorldPosition();
+    const double radius = player->bodyRadius();
     if (chase.firstPerson)
     {
         const Vec3 forward(-std::sin(chase.yaw), 0.0, -std::cos(chase.yaw));
@@ -169,18 +232,64 @@ void applyPlayCamera(Scene &scene, ViewState &view, const ChaseCamera &chase, co
     view.fov = chase.blendFov * (1.0 - smooth) + toFov * smooth;
 }
 
-void playScoreBeep(bool scoreIncreased, const std::string &message, bool becameWon, const Vec3 &listener, const Vec3 &source)
+void playSimEvents(Scene &scene, const std::vector<SimEvent> &events, const Vec3 &listener)
 {
+    if (events.empty())
+        return;
     setSoundListener(listener);
-    const GameSound sound = (becameWon || message == "You win") ? GameSound::Win
-        : (scoreIncreased || message == "Picked up") ? GameSound::Pickup
-        : GameSound::Beep;
-    playGameSound(sound, source);
+    auto playBatch = [&](const std::vector<const SimEvent *> &batch) {
+        if (batch.empty())
+            return;
+        const SimEvent *source = nullptr;
+        GameSound sound = GameSound::Beep;
+        bool have = false;
+        for (const SimEvent *event : batch)
+        {
+            if (event->kind == SimEventKind::Pickup)
+                burstParticles(scene, event->position, Vec3(0.95, 0.85, 0.25));
+            else if (event->kind == SimEventKind::Effect)
+                burstParticles(scene, event->position, Vec3(0.9, 0.2, 0.15));
+            if (event->kind == SimEventKind::Win)
+            {
+                source = event;
+                sound = GameSound::Win;
+                have = true;
+            }
+            else if (event->kind == SimEventKind::Pickup && !(have && sound == GameSound::Win))
+            {
+                source = event;
+                sound = GameSound::Pickup;
+                have = true;
+            }
+            else if (event->kind == SimEventKind::Sound && !(have && (sound == GameSound::Win || sound == GameSound::Pickup)))
+            {
+                source = event;
+                sound = GameSound::Beep;
+                have = true;
+            }
+        }
+        if (have && source != nullptr)
+            playGameSound(sound, source->position);
+    };
+
+    std::vector<const SimEvent *> batch;
+    SimTick batchTick = events.front().tick;
+    for (const SimEvent &event : events)
+    {
+        if (event.tick != batchTick)
+        {
+            playBatch(batch);
+            batch.clear();
+            batchTick = event.tick;
+        }
+        batch.push_back(&event);
+    }
+    playBatch(batch);
 }
 
-bool drawPauseMenu(const ViewState &view, PlayState &state, bool gameMode, float &timeScale, bool &stepOnce, bool &restart)
+bool drawPauseMenu(ViewState &view, PlayState &state, bool gameMode, float &timeScale, bool &stepOnce, bool &restart)
 {
-    if (!view.playing || !state.paused)
+    if (!view.playing || (!view.paused && state.result.empty()))
         return false;
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     const ImVec2 center(
@@ -193,7 +302,7 @@ bool drawPauseMenu(const ViewState &view, PlayState &state, bool gameMode, float
     if (over)
         ImGui::TextUnformatted(state.result == "won" ? "You win" : "You lose");
     if (!over && ImGui::Button("Resume", ImVec2(120, 0)))
-        state.paused = false;
+        view.paused = false;
     if (!over)
         ImGui::SameLine();
     if (!over && ImGui::Button("Step", ImVec2(120, 0)))
@@ -207,14 +316,14 @@ bool drawPauseMenu(const ViewState &view, PlayState &state, bool gameMode, float
     if (ImGui::Button("Quit", ImVec2(120, 0)))
     {
         if (gameMode)
-            ::PostQuitMessage(0);
+            requestEditorQuit();
         else
             quitToEditor = true;
     }
     if (!over)
     {
         ImGui::SliderFloat("Speed", &timeScale, 0.25f, 2.0f, "%.2fx");
-        ImGui::TextUnformatted("Step runs one 1/60 s tick.");
+        ImGui::TextUnformatted("Step runs one 1/30 s tick.");
     }
     ImGui::End();
     return quitToEditor;
@@ -238,15 +347,15 @@ void drawTitleScreen(ViewState &view)
         saveEditorSettings(view);
     }
     if (ImGui::Button("Quit", ImVec2(160, 0)))
-        ::PostQuitMessage(0);
+        requestEditorQuit();
     ImGui::End();
 }
 
-void drawPlayHud(Scene &scene, const ViewState &view, const PlayState &state, float timeScale, bool firstPerson, const char *cameraLabel)
+void drawPlayHud(const Snapshot &snapshot, const ViewState &view, float timeScale, bool firstPerson, const char *cameraLabel)
 {
     if (!view.playing)
         return;
-    const bool hasPlayer = state.playerId >= 0 && scene.find(state.playerId) != nullptr;
+    const bool hasPlayer = snapshot.playerId != kInvalidEntityId;
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.55f);
@@ -255,18 +364,18 @@ void drawPlayHud(Scene &scene, const ViewState &view, const PlayState &state, fl
     if (!hasPlayer)
         ImGui::TextUnformatted("No player");
     else
-        ImGui::Text("Score: %d    Health: %d", state.score, state.health);
+        ImGui::Text("Score: %d    Health: %d", snapshot.score, snapshot.health);
     if (cameraLabel != nullptr && cameraLabel[0] != '\0')
         ImGui::TextUnformatted(cameraLabel);
     else if (firstPerson)
         ImGui::TextUnformatted("First person");
     if (timeScale < 0.99f || timeScale > 1.01f)
         ImGui::Text("Speed: %.2fx", timeScale);
-    if (state.message == "Picked up")
-        ImGui::TextUnformatted(state.message.c_str());
+    if (snapshot.message == "Picked up")
+        ImGui::TextUnformatted(snapshot.message.c_str());
     ImGui::End();
 
-    const std::string bannerText = state.message == "Press F" ? std::string("Press ") + nameFromVk(gKeyUse) : state.message;
+    const std::string bannerText = snapshot.message == "Press F" ? std::string("Press ") + nameFromVk(gKeyUse) : snapshot.message;
     if (!bannerText.empty() && bannerText != "Picked up")
     {
         const ImVec2 banner(
@@ -280,12 +389,12 @@ void drawPlayHud(Scene &scene, const ViewState &view, const PlayState &state, fl
         ImGui::End();
     }
 
-    if (state.result.empty() && g_viewImageShown && (state.lookTag == "use" || state.lookTag == "goal") && state.lookId >= 0)
+    if (snapshot.result.empty() && g_viewImageShown && (snapshot.lookTag == "use" || snapshot.lookTag == "goal") && snapshot.lookId != kInvalidEntityId)
     {
         const double aspect = view.height > 0 ? static_cast<double>(view.width) / static_cast<double>(view.height) : 1.0;
         const Camera shot = viewCamera(view, aspect);
         const std::string key = nameFromVk(gKeyUse);
-        drawWorldPrompt(shot, state.lookPoint, key.c_str(), g_viewImageMin.x, g_viewImageMin.y, g_viewImageMax.x, g_viewImageMax.y);
+        drawWorldPrompt(shot, snapshot.lookPoint, key.c_str(), g_viewImageMin.x, g_viewImageMin.y, g_viewImageMax.x, g_viewImageMax.y);
     }
 }
 

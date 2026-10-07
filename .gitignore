@@ -1,10 +1,16 @@
 dist/
+build/
+vcpkg_installed/
+vcpkg/
 *.o
 *.obj
 !assets/*.obj
+!assets/**/*.obj
 *.exe
 raytracer-settings.txt
 raytracer-debug.txt
+raytracer.log
 *.dll
 *.a
 render.png
+cooked/

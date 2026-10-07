@@ -2,6 +2,7 @@
 
 #include "Camera.hpp"
 #include "GpuLimits.hpp"
+#include "MeshRaster.hpp"
 #include "Scene.hpp"
 
 #include <cstdint>
@@ -24,7 +25,7 @@ public:
         int height,
         int sampleGrid,
         int maxDepth,
-        int selectedObject,
+        EntityId selectedObject,
         bool linearOutput = false,
         int sampleIndex = -1,
         double timeSeconds = 0,
@@ -34,7 +35,11 @@ public:
     bool readPixelsLinear(unsigned texture, int width, int height, std::vector<float> &pixels) const;
 
 private:
-    void rasterizeMeshes(const Camera &camera, const Scene &scene, const std::vector<float> &vertices, const std::vector<float> &meshMin, const std::vector<float> &meshMax, int meshCount, int width, int height, std::vector<float> &shadowClip, int sampleGrid, int sampleIndex);
+    void rasterizeMeshes(const Camera &camera, const Scene &scene, const std::vector<float> &vertices,
+        const std::vector<std::uint32_t> &indices, const std::vector<MeshRasterGeom> &geoms,
+        const std::vector<MeshRasterInstance> &instances, const std::vector<float> &meshMin,
+        const std::vector<float> &meshMax, int meshCount, int width, int height, std::vector<float> &shadowClip,
+        int sampleGrid, int sampleIndex);
     void foldSample(unsigned display, int width, int height, int previous, bool linearOutput);
     void applyBloom(unsigned display, int width, int height);
     bool ready_ = false;
@@ -64,6 +69,8 @@ private:
     unsigned shadowProgram_ = 0;
     unsigned meshVao_ = 0;
     unsigned meshVbo_ = 0;
+    unsigned meshEbo_ = 0;
+    unsigned meshInstanceVbo_ = 0;
     unsigned gbufferFbo_ = 0;
     unsigned gbufferDepth_ = 0;
     unsigned meshPosTex_ = 0;
@@ -74,6 +81,7 @@ private:
     unsigned shadowFbo_ = 0;
     unsigned shadowDepth_ = 0;
     unsigned shadowTex_ = 0;
+    int shadowSize_ = 0;
     bool shadowReady_ = false;
     unsigned blendProgram_ = 0;
     unsigned resolveProgram_ = 0;

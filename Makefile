@@ -1,3 +1,8 @@
+# DEPRECATED: CMake is the supported build. Use build.bat or:
+#   cmake --preset windows-msvc && cmake --build --preset windows-msvc
+# See docs/build-and-platform.md. This Makefile is kept only as a reference
+# of the previous hand-listed object recipes; it is not maintained.
+#
 # Windows builds with the MSVC compiler from Visual Studio Build Tools.
 # FBX SDK 2020.3.11 is the VS2022 install under Program Files.
 # Short paths keep the recipes free of spaces:

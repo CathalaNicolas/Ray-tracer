@@ -20,6 +20,8 @@ GlUniform1i glUniform1iFn = nullptr;
 GlUniform1f glUniform1fFn = nullptr;
 GlActiveTexture glActiveTextureFn = nullptr;
 GlTexImage3D glTexImage3DFn = nullptr;
+GlCompressedTexImage2D glCompressedTexImage2DFn = nullptr;
+GlCompressedTexImage3D glCompressedTexImage3DFn = nullptr;
 GlUniform3f glUniform3fFn = nullptr;
 GlUniform4fv glUniform4fvFn = nullptr;
 GlUniform1iv glUniform1ivFn = nullptr;
@@ -37,6 +39,9 @@ GlBufferData glBufferDataFn = nullptr;
 GlDeleteBuffers glDeleteBuffersFn = nullptr;
 GlEnableVertexAttribArray glEnableVertexAttribArrayFn = nullptr;
 GlVertexAttribPointer glVertexAttribPointerFn = nullptr;
+GlVertexAttribDivisor glVertexAttribDivisorFn = nullptr;
+GlDrawArraysInstanced glDrawArraysInstancedFn = nullptr;
+GlDrawElementsInstanced glDrawElementsInstancedFn = nullptr;
 GlUniformMatrix4fv glUniformMatrix4fvFn = nullptr;
 GlDrawBuffers glDrawBuffersFn = nullptr;
 GlFramebufferTextureLayer glFramebufferTextureLayerFn = nullptr;
@@ -69,11 +74,17 @@ GLuint compileShader(GLenum type, const char *source, std::string &error)
 
 void configureTexture(GLenum target, GLint filter)
 {
-    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
+    configureTextureMips(target, filter, 0);
+}
+
+void configureTextureMips(GLenum target, GLint filter, int maxLevel)
+{
+    const GLint minFilter = maxLevel > 0 ? GL_LINEAR_MIPMAP_LINEAR : filter;
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, minFilter);
     glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
     glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, 0);
+    glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, maxLevel);
 }
 
 #endif

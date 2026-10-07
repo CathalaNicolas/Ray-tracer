@@ -25,40 +25,54 @@ void writeTag(std::ostream &out, const std::string &tag)
         out << " tag \"" << escapeName(tag) << '"';
 }
 
-void writeMotion(std::ostream &out, const Hittable &object)
+void writeMotion(std::ostream &out, const Object &object)
 {
-    if (object.motion.active())
+    if (object.motion().active())
     {
-        const Motion &motion = object.motion;
+        const Motion &motion = object.motion();
         out << " motion " << motion.move.x << ' ' << motion.move.y << ' ' << motion.move.z << ' '
             << motion.rotate.x << ' ' << motion.rotate.y << ' ' << motion.rotate.z << ' '
             << motion.scale << ' ' << motion.period;
     }
-    if (object.spawnEvery > 0)
-        out << " every " << object.spawnEvery;
+    if (object.spawnEvery() > 0)
+        out << " every " << object.spawnEvery();
 }
 
-void writeAction(std::ostream &out, const Hittable &object)
+void writeAction(std::ostream &out, const Object &object)
 {
-    if (!object.action.armed())
+    if (!object.action().armed())
         return;
-    const Action &action = object.action;
+    const Action &action = object.action();
     out << " act \"" << escapeName(action.target) << "\" " << action.move.x << ' ' << action.move.y << ' ' << action.move.z;
     const double spin = std::abs(action.rotate.x) + std::abs(action.rotate.y) + std::abs(action.rotate.z);
     if (spin > 1e-8)
         out << ' ' << action.rotate.x << ' ' << action.rotate.y << ' ' << action.rotate.z;
 }
 
-void writeParent(std::ostream &out, const Hittable &object)
+void writeParent(std::ostream &out, const Object &object)
 {
-    if (object.parentId != 0)
-        out << " parent " << object.parentId;
-    if (!object.prefab.empty())
-        out << " prefab \"" << escapeName(object.prefab) << '"';
-    if (!object.instanceOf.empty())
-        out << " instance \"" << escapeName(object.instanceOf) << '"';
-    if (object.layer != 0)
-        out << " layer " << object.layer;
+    if (object.parentId() != kInvalidEntityId)
+        out << " parent " << object.parentId();
+    if (!object.prefab().empty())
+        out << " prefab \"" << escapeName(object.prefab()) << '"';
+    if (!object.instanceOf().empty())
+        out << " instance \"" << escapeName(object.instanceOf()) << '"';
+    if (object.layer() != 0)
+        out << " layer " << object.layer();
+}
+
+void writeObjectTail(std::ostream &out, const Object &object)
+{
+    out << " id " << object.id();
+    const Vec3 rotation = object.localRotation();
+    if (!object.isMesh() && (std::abs(rotation.x) + std::abs(rotation.y) + std::abs(rotation.z) > 1e-8))
+        out << " rot " << rotation.x << ' ' << rotation.y << ' ' << rotation.z;
+    if (!object.isMesh() && std::abs(object.localScale() - 1.0) > 1e-8)
+        out << " scale " << object.localScale();
+    writeTag(out, object.tag());
+    writeMotion(out, object);
+    writeAction(out, object);
+    writeParent(out, object);
 }
 
 void writeMaterial(std::ostream &out, const Material &material)

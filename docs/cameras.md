@@ -6,7 +6,7 @@ Two cameras exist. Both are a look-from point, a look-at point, and up `(0, 1, 0
 
 Orbit, pan, and zoom run only while play is off. Field of view, aperture, and focus distance are on the view and are saved with the scene. Focus distance defaults to the look-from / look-at distance when the file omits it.
 
-Aperture `0`, or a single sample, is a pinhole. Aperture above zero with more than one sample offsets the ray origin on a Vogel disk and aims at the focus distance. The clip matrix used for the raster meshes is `cameraClipMatrix`. Leave that function intact when changing the lens.
+Aperture `0`, or a single sample, is a pinhole. Aperture above zero with more than one sample offsets the ray origin on a Vogel disk and aims at the focus distance. The clip matrix used for the raster meshes is `cameraClipMatrix`. Its far plane is `view_distance` (default 2000). Leave the rest of that function intact when changing the lens.
 
 Play stores the editor camera and puts it back on Stop.
 
@@ -19,7 +19,7 @@ While playing, orbit, pan, and zoom are off. If `PlayState::playerId` is a spher
 - Yaw and pitch come from the mouse. Pitch is clamped to `-1.2..1.2` radians. Sensitivity is `0.005` radians per pixel.
 - On Play, yaw is taken from the editor view so the chase starts behind the current forward, and pitch starts at `0.4`.
 
-Mouse look is ignored when the window is in the background. The camera is placed again after every simulation step so it follows the player. `chaseCameraPosition` then casts from the player center toward that point. It uses `play_detail::isSolid` with `forCamera` true and stops `0.3` short of the first layer-0 solid, so the eye does not enter the tree. Layer 1, including the demo door, is skipped by that same test and still blocks the player. It never comes closer than `0.5`. Pickups, the goal, the switch, and hazards are not solids, so they do not pull the camera in. If there is no player sphere, the editor camera stays where it was and the HUD says `No player`.
+Mouse look is ignored when the SDL window does not have keyboard focus. The camera is placed after interpolated poses are applied so it follows the lerped player. `chaseCameraPosition` then casts from the player center toward that point. It uses `play_detail::isSolid` with `forCamera` true and stops `0.3` short of the first layer-0 solid, so the eye does not enter the tree. Layer 1, including the demo door, is skipped by that same test and still blocks the player. It never comes closer than `0.5`. Pickups, the goal, the switch, and hazards are not solids, so they do not pull the camera in. If there is no player sphere, the editor camera stays where it was and the HUD says `No player`.
 
 While chase is active, distance stays `4.5`, `chaseCameraPosition` still pulls the eye in, and pitch stays clamped to `-1.2..1.2`. Nothing splits the view.
 

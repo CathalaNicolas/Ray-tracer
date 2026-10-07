@@ -8,17 +8,17 @@ Do this only when a feature needs a new shape or a new role. A pass that renames
 
 ## Shape: one surface, still three classes — done
 
-`Sphere`, `Plane`, and `Mesh` stay three classes. Shared ops live on `Hittable` as virtuals: transform, collision, `blocksPlayer` / `blocksCamera`, `colliderSketch`, `writeScene`, `contributeGpu`, `copyShapeFrom`, `mixShapeHash`, `applyParentAxes`. Callers that used to cast for those now dispatch once. A fourth shape implements the virtuals; the shader still needs its own loop.
+`Sphere`, `Plane`, and `Mesh` are now aliases for `Object`. Shared ops live on the handle and dispatch to EnTT components. GPU upload is `gpu_detail::contribute` in render, not a core virtual. A fourth shape still needs a shader loop.
 
-The inspector still casts for shape-only widgets (plane checker, mesh path). Mirror-bounce debug still reads sphere radii for its dump. Roles sit beside the shape: `makeRole(tag)` builds a `Role` (`Solid`, `Player`, `Pickup`, …). Play uses `RoleKind`, not tag strings. The scene file still stores the tag word.
+`Scene::find` is an `EntityId` map. `Object::worldMatrix()` is cached until `bumpParentFrames()`. A shared transform matrix for lights and cameras is still missing on the checklist.
 
-`Scene::find` is an `id` map. `parentFrame()` is cached until `bumpParentFrames()`. A shared transform matrix for lights and cameras is still missing on the checklist.
+The inspector still branches for shape-only widgets (plane checker, mesh path). Mirror-bounce debug still reads sphere radii for its dump. Roles sit beside the shape: `makeRole(tag)` builds a `Role` (`Solid`, `Player`, `Pickup`, …). Play uses `RoleKind`, not tag strings. The scene file still stores the tag word.
 
 ## Role: a small type beside the shape — done
 
 A `SpherePickup` and a `MeshPickup` would duplicate the pickup rule and freeze the demo's accident that pickups happen to be spheres. The spawner already creates a sphere. A mesh pickup should be the same rule. Tags and shapes are independent on purpose.
 
-A role is attached to any `Hittable`. `makeRole` builds it from the tag string. The file still writes that word. `collectPlayEvents` switches on `RoleKind`. `blocksPlayer` asks `passThroughSolid` / `meshBlocks`. `platform` is `Solid` with `carriesPlayer`.
+A role is attached to any `Object`. `makeRole` builds it from the tag string. The file still writes that word. `collectPlayEvents` switches on `RoleKind`. `blocksPlayer` asks `passThroughSolid` / `meshBlocks`. `platform` is `Solid` with `carriesPlayer`.
 
 ## Light: keep one record
 

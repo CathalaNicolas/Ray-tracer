@@ -1,9 +1,16 @@
+#include "Content.hpp"
 #include "DemoScene.hpp"
 #include "Editor.hpp"
+#include "Jobs.hpp"
+#include "Log.hpp"
+#include "MeshImport.hpp"
+#include "MeshLoad.hpp"
 #include "RayTracer.hpp"
 #include "SelfTest.hpp"
 
 #include "stb/stb_image_write.h"
+
+#include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <cstdint>
@@ -149,53 +156,77 @@ bool savePng(const Image &image, const std::string &path)
 
 int main(int argc, char **argv)
 {
+    logging::init();
+    jobs::init();
+    contentInit(".");
+    setMeshFileLoader(mesh_import::load);
+
+    int exitCode = 0;
     Options options;
     try
     {
         if (!parseArgs(argc, argv, options))
-            return 1;
+            exitCode = 1;
     }
     catch (const std::exception &error)
     {
         std::cerr << error.what() << "\n";
-        return 1;
+        exitCode = 1;
     }
 
-    if (options.help)
+    if (exitCode == 0)
     {
-        printUsage();
-        return 0;
+        if (options.help)
+        {
+            printUsage();
+        }
+        else if (options.selfTest)
+        {
+            exitCode = runSelfTests();
+        }
+        else if (options.game)
+        {
+            spdlog::info("starting game window {}x{}", options.width, options.height);
+            exitCode = runEditor(options.width, options.height, options.samples, options.depth, true);
+        }
+        else if (options.window)
+        {
+            spdlog::info("starting editor {}x{}", options.width, options.height);
+            exitCode = runEditor(options.width, options.height, options.samples, options.depth, false);
+        }
+        else
+        {
+            Scene scene = createDemoScene();
+            Camera camera = createDemoCamera(static_cast<double>(options.width) / options.height);
+            Image image(options.width, options.height);
+
+            RayTracer tracer;
+            tracer.maxDepth = options.depth;
+            tracer.sampleGrid = options.samples;
+
+            auto started = std::chrono::steady_clock::now();
+            tracer.render(scene, camera, image);
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started);
+            std::cout << "Rendered " << options.width << "x" << options.height
+                      << " in " << elapsed.count() << " ms\n";
+            spdlog::info("offline render {}x{} in {} ms", options.width, options.height, elapsed.count());
+
+            bool ok = true;
+            if (!options.ppm.empty() && !image.writePPM(options.ppm))
+            {
+                std::cerr << "Could not write " << options.ppm << "\n";
+                ok = false;
+            }
+            if (!options.png.empty() && !savePng(image, options.png))
+                ok = false;
+
+            exitCode = ok ? 0 : 1;
+        }
     }
-    if (options.selfTest)
-        return runSelfTests();
-    if (options.game)
-        return runEditor(options.width, options.height, options.samples, options.depth, true);
-    if (options.window)
-        return runEditor(options.width, options.height, options.samples, options.depth, false);
 
-    Scene scene = createDemoScene();
-    Camera camera = createDemoCamera(static_cast<double>(options.width) / options.height);
-    Image image(options.width, options.height);
-
-    RayTracer tracer;
-    tracer.maxDepth = options.depth;
-    tracer.sampleGrid = options.samples;
-
-    auto started = std::chrono::steady_clock::now();
-    tracer.render(scene, camera, image);
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - started);
-    std::cout << "Rendered " << options.width << "x" << options.height
-              << " in " << elapsed.count() << " ms\n";
-
-    bool ok = true;
-    if (!options.ppm.empty() && !image.writePPM(options.ppm))
-    {
-        std::cerr << "Could not write " << options.ppm << "\n";
-        ok = false;
-    }
-    if (!options.png.empty() && !savePng(image, options.png))
-        ok = false;
-
-    return ok ? 0 : 1;
+    contentShutdown();
+    jobs::shutdown();
+    logging::shutdown();
+    return exitCode;
 }

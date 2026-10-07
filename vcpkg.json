@@ -1,0 +1,30 @@
+{
+  "name": "raytracer",
+  "version-string": "0.1.0",
+  "builtin-baseline": "434307da09bc05b2c86996dccc8b2351fc0d5d37",
+  "description": "Ray tracer editor and play runtime",
+  "dependencies": [
+    "entt",
+    "glm",
+    "enkits",
+    "spdlog",
+    "doctest",
+    "tracy",
+    "sdl3",
+    "bitsery",
+    "sqlite3",
+    {
+      "name": "joltphysics",
+      "features": [
+        "double-precision"
+      ]
+    },
+    "miniaudio",
+    "assimp",
+    "meshoptimizer",
+    "zstd",
+    "physfs",
+    "directxtex",
+    "flatbuffers"
+  ]
+}

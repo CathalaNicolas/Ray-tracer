@@ -3,19 +3,27 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 #if !defined(_WIN32)
 
-void GpuRayTracer::rasterizeMeshes(const Camera &, const Scene &, const std::vector<float> &, const std::vector<float> &, const std::vector<float> &, int, int, int, std::vector<float> &, int, int)
+void GpuRayTracer::rasterizeMeshes(const Camera &, const Scene &, const std::vector<float> &,
+    const std::vector<std::uint32_t> &, const std::vector<MeshRasterGeom> &, const std::vector<MeshRasterInstance> &,
+    const std::vector<float> &, const std::vector<float> &, int, int, int, std::vector<float> &, int, int)
 {
 }
 
 #else
 
+#include "EngineSettings.hpp"
+#include "EntityId.hpp"
+#include "Frustum.hpp"
 #include "GpuContribute.hpp"
 #include "GpuGl.hpp"
+#include "GpuLights.hpp"
 #include "GpuRenderDetail.hpp"
 #include "Mesh.hpp"
+#include "MeshRaster.hpp"
 
 namespace
 {
@@ -99,8 +107,8 @@ void cameraClipMatrix(const Camera &camera, float out[16], Vec3 &right, Vec3 &up
     up = normalize(vertical);
     forward = normalize(camera.origin() - right * halfWidth - up * halfHeight - camera.lowerLeft());
     const Vec3 eye = camera.origin() + right * lensX + up * lensY;
-    const double nearP = 0.02;
-    const double farP = 2000.0;
+    const double nearP = kGpuClipNear;
+    const double farP = engineSettings().viewDistance > 1 ? engineSettings().viewDistance : kGpuClipFarDefault;
     const double c = (farP + nearP) / (farP - nearP);
     const double d = -2.0 * farP * nearP / (farP - nearP);
     const double ox = dot(eye, right);
@@ -165,9 +173,13 @@ void jitterClip(float *clip, int width, int height, int sampleGrid, int sampleIn
 
 } // namespace
 
-void GpuRayTracer::rasterizeMeshes(const Camera &camera, const Scene &scene, const std::vector<float> &vertices, const std::vector<float> &meshMin, const std::vector<float> &meshMax, int meshCount, int width, int height, std::vector<float> &shadowClip, int sampleGrid, int sampleIndex)
+void GpuRayTracer::rasterizeMeshes(const Camera &camera, const Scene &scene, const std::vector<float> &vertices,
+    const std::vector<std::uint32_t> &indices, const std::vector<MeshRasterGeom> &geoms,
+    const std::vector<MeshRasterInstance> &instances, const std::vector<float> &meshMin,
+    const std::vector<float> &meshMax, int meshCount, int width, int height, std::vector<float> &shadowClip,
+    int sampleGrid, int sampleIndex)
 {
-    if (rasterProgram_ == 0 || width <= 0 || height <= 0 || meshCount <= 0 || vertices.size() < 9)
+    if (rasterProgram_ == 0 || width <= 0 || height <= 0 || meshCount <= 0 || vertices.size() < 8)
         return;
 
     if (gbufferW_ != width || gbufferH_ != height)
@@ -191,26 +203,106 @@ void GpuRayTracer::rasterizeMeshes(const Camera &camera, const Scene &scene, con
         gbufferH_ = height;
     }
 
-    if (!shadowReady_)
+    int shadowSize = engineSettings().shadowMapSize;
+    if (shadowSize < 256)
+        shadowSize = 256;
+    if (shadowSize > 2048)
+        shadowSize = 2048;
+    if (!shadowReady_ || shadowSize_ != shadowSize)
     {
         glBindTexture(GL_TEXTURE_2D_ARRAY, shadowTex_);
         configureTexture(GL_TEXTURE_2D_ARRAY, GL_NEAREST);
-        glTexImage3DFn(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, 1024, 1024, kGpuMaxLights, 0, GL_RED, GL_FLOAT, nullptr);
+        glTexImage3DFn(GL_TEXTURE_2D_ARRAY, 0, GL_R32F, shadowSize, shadowSize, kGpuMaxLights, 0, GL_RED, GL_FLOAT, nullptr);
         glBindRenderbufferFn(GL_RENDERBUFFER, shadowDepth_);
-        glRenderbufferStorageFn(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 1024, 1024);
+        glRenderbufferStorageFn(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, shadowSize, shadowSize);
         glBindFramebufferFn(GL_FRAMEBUFFER, shadowFbo_);
         glFramebufferRenderbufferFn(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, shadowDepth_);
         shadowReady_ = true;
+        shadowSize_ = shadowSize;
     }
 
-    const int vertexCount = static_cast<int>(vertices.size() / 9);
     glBindVertexArrayFn(meshVao_);
     glBindBufferFn(GL_ARRAY_BUFFER, meshVbo_);
     glBufferDataFn(GL_ARRAY_BUFFER, static_cast<ptrdiff_t>(vertices.size() * sizeof(float)), vertices.data(), GL_DYNAMIC_DRAW);
+    glBindBufferFn(GL_ELEMENT_ARRAY_BUFFER, meshEbo_);
+    glBufferDataFn(GL_ELEMENT_ARRAY_BUFFER, static_cast<ptrdiff_t>(indices.size() * sizeof(std::uint32_t)),
+        indices.data(), GL_DYNAMIC_DRAW);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
+
+    struct DrawCmd
+    {
+        int indexOffset = 0;
+        int indexCount = 0;
+        int instanceStart = 0;
+        int instanceCount = 0;
+    };
+    auto packPass = [&](bool frustumOnly, int transparentMode, std::vector<float> &packed, std::vector<DrawCmd> &cmds) {
+        packed.clear();
+        cmds.clear();
+        for (size_t geom = 0; geom < geoms.size(); ++geom)
+        {
+            if (geoms[geom].indexCount <= 0)
+                continue;
+            const int start = static_cast<int>(packed.size() / 14);
+            int count = 0;
+            for (const MeshRasterInstance &instance : instances)
+            {
+                if (instance.geom != static_cast<int>(geom))
+                    continue;
+                if (frustumOnly && !instance.inFrustum)
+                    continue;
+                if (transparentMode == 0 && instance.transparent)
+                    continue;
+                if (transparentMode == 1 && !instance.transparent)
+                    continue;
+                packed.push_back(instance.meshId);
+                packed.push_back(instance.px);
+                packed.push_back(instance.py);
+                packed.push_back(instance.pz);
+                packed.push_back(instance.scale);
+                packed.push_back(instance.ax);
+                packed.push_back(instance.ay);
+                packed.push_back(instance.az);
+                packed.push_back(instance.bx);
+                packed.push_back(instance.by);
+                packed.push_back(instance.bz);
+                packed.push_back(instance.cx);
+                packed.push_back(instance.cy);
+                packed.push_back(instance.cz);
+                ++count;
+            }
+            if (count > 0)
+                cmds.push_back(DrawCmd{geoms[geom].indexOffset, geoms[geom].indexCount, start, count});
+        }
+    };
+    auto bindInstanceOffset = [&](int instanceStart) {
+        const GLsizei stride = 14 * static_cast<GLsizei>(sizeof(float));
+        const char *base = reinterpret_cast<const char *>(static_cast<size_t>(instanceStart) * 14 * sizeof(float));
+        glVertexAttribPointerFn(3, 1, GL_FLOAT, GL_FALSE, stride, base);
+        glVertexAttribPointerFn(4, 4, GL_FLOAT, GL_FALSE, stride, base + 1 * sizeof(float));
+        glVertexAttribPointerFn(5, 3, GL_FLOAT, GL_FALSE, stride, base + 5 * sizeof(float));
+        glVertexAttribPointerFn(6, 3, GL_FLOAT, GL_FALSE, stride, base + 8 * sizeof(float));
+        glVertexAttribPointerFn(7, 3, GL_FLOAT, GL_FALSE, stride, base + 11 * sizeof(float));
+    };
+    auto drawPacked = [&](const std::vector<float> &packed, const std::vector<DrawCmd> &cmds) {
+        if (packed.empty() || cmds.empty())
+            return;
+        glBindBufferFn(GL_ARRAY_BUFFER, meshInstanceVbo_);
+        glBufferDataFn(GL_ARRAY_BUFFER, static_cast<ptrdiff_t>(packed.size() * sizeof(float)), packed.data(), GL_DYNAMIC_DRAW);
+        for (const DrawCmd &cmd : cmds)
+        {
+            bindInstanceOffset(cmd.instanceStart);
+            const void *offset = reinterpret_cast<const void *>(static_cast<size_t>(cmd.indexOffset) * sizeof(std::uint32_t));
+            glDrawElementsInstancedFn(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_INT, offset, cmd.instanceCount);
+        }
+    };
+
+    std::vector<float> shadowPacked;
+    std::vector<DrawCmd> shadowCmds;
+    packPass(false, 2, shadowPacked, shadowCmds);
 
     const float depthOne = 1.0f;
     if (!gpu_detail::reuseShadowMaps())
@@ -232,7 +324,7 @@ void GpuRayTracer::rasterizeMeshes(const Camera &camera, const Scene &scene, con
 
     const float farClear[4] = {1.0e20f, 1.0e20f, 1.0e20f, 1.0e20f};
     glBindFramebufferFn(GL_FRAMEBUFFER, shadowFbo_);
-    glViewport(0, 0, 1024, 1024);
+    glViewport(0, 0, shadowSize, shadowSize);
     glUseProgramFn(shadowProgram_);
     const GLint lightPosLoc = glGetUniformLocationFn(shadowProgram_, "uLightPos");
     const GLint lightDirLoc = glGetUniformLocationFn(shadowProgram_, "uLightDir");
@@ -254,86 +346,64 @@ void GpuRayTracer::rasterizeMeshes(const Camera &camera, const Scene &scene, con
         glDrawBuffersFn(1, &shadowDraw);
         glClearBufferfvFn(GL_COLOR, 0, farClear);
         glClearBufferfvFn(GL_DEPTH, 0, &depthOne);
+        const int faceW = shadowSize / 3;
+        const int faceH = shadowSize / 2;
         for (int face = 0; face < 6; ++face)
         {
             cubeFaceClip(eye, face, clip);
             glUniformMatrix4fvFn(shadowClipLoc, 1, GL_FALSE, clip);
             const int col = face % 3;
             const int row = face / 3;
-            glViewport(col * 341, row * 512, 341, 512);
-            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+            glViewport(col * faceW, row * faceH, faceW, faceH);
+            drawPacked(shadowPacked, shadowCmds);
         }
-        glViewport(0, 0, 1024, 1024);
+        glViewport(0, 0, shadowSize, shadowSize);
     };
-    std::vector<int> meshSlotForId;
-    auto slotFor = [&](int id) {
-        for (size_t index = 0; index + 1 < meshSlotForId.size(); index += 2)
+    auto slotFor = [&](EntityId id) {
+        for (const MeshRasterInstance &instance : instances)
         {
-            if (meshSlotForId[index] == id)
-                return meshSlotForId[index + 1];
+            if (instance.objectId == id)
+                return static_cast<int>(instance.meshId);
         }
         return -1;
     };
-    int nextSlot = 0;
-    struct MeshSlots : gpu_detail::GpuContribute
-    {
-        std::vector<int> *ids = nullptr;
-        int *slot = nullptr;
-        void sphere(const Hittable &, const Vec3 &, double) override {}
-        void plane(const Hittable &, const Vec3 &, const Vec3 &, bool, const Vec3 &, double) override {}
-        void mesh(const Mesh &object) override
-        {
-            if (object.triangles().empty() || ids == nullptr || slot == nullptr)
-                return;
-            ids->push_back(object.id);
-            ids->push_back(*slot);
-            ++(*slot);
-        }
-    } slots;
-    slots.ids = &meshSlotForId;
-    slots.slot = &nextSlot;
-    for (const auto &object : scene.objects())
-        object->contributeGpu(slots);
-    for (const PointLight &light : scene.lights())
+    for (const GpuLightPick &pick : rankGpuLights(scene, camera.origin(), kGpuMaxLights))
     {
         if (lightIndex >= kGpuMaxLights)
             break;
-        float *clip = shadowClip.data() + static_cast<size_t>(lightIndex) * 16;
-        Vec3 up(0, 1, 0);
-        if (light.directional)
+        if (!pick.fromObject)
         {
-            Vec3 lightDir = normalize(light.position);
-            if (std::abs(lightDir.y) > 0.9)
-                up = Vec3(1, 0, 0);
-            const Vec3 eye = center + lightDir * (radius + 2.0);
-            orthoClip(eye, center, up, radius, 0.05, radius * 2.0 + 4.0, clip);
-            glUniform3fFn(lightDirLoc, static_cast<float>(lightDir.x), static_cast<float>(lightDir.y), static_cast<float>(lightDir.z));
-            glUniform1iFn(directionalLoc, 1);
-            glUniform1iFn(paraboloidLoc, 0);
-            glUniformMatrix4fvFn(shadowClipLoc, 1, GL_FALSE, clip);
-            glUniform1fFn(skipMeshLoc, -1.0f);
-            glFramebufferTextureLayerFn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, shadowTex_, 0, lightIndex);
-            const GLenum shadowDraw = GL_COLOR_ATTACHMENT0;
-            glDrawBuffersFn(1, &shadowDraw);
-            glClearBufferfvFn(GL_COLOR, 0, farClear);
-            glClearBufferfvFn(GL_DEPTH, 0, &depthOne);
-            glViewport(0, 0, 1024, 1024);
-            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+            const PointLight &light = scene.lights()[pick.index];
+            float *clip = shadowClip.data() + static_cast<size_t>(lightIndex) * 16;
+            Vec3 up(0, 1, 0);
+            if (light.directional)
+            {
+                Vec3 lightDir = normalize(light.position);
+                if (std::abs(lightDir.y) > 0.9)
+                    up = Vec3(1, 0, 0);
+                const Vec3 eye = center + lightDir * (radius + 2.0);
+                orthoClip(eye, center, up, radius, 0.05, radius * 2.0 + 4.0, clip);
+                glUniform3fFn(lightDirLoc, static_cast<float>(lightDir.x), static_cast<float>(lightDir.y), static_cast<float>(lightDir.z));
+                glUniform1iFn(directionalLoc, 1);
+                glUniform1iFn(paraboloidLoc, 0);
+                glUniformMatrix4fvFn(shadowClipLoc, 1, GL_FALSE, clip);
+                glUniform1fFn(skipMeshLoc, -1.0f);
+                glFramebufferTextureLayerFn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, shadowTex_, 0, lightIndex);
+                const GLenum shadowDraw = GL_COLOR_ATTACHMENT0;
+                glDrawBuffersFn(1, &shadowDraw);
+                glClearBufferfvFn(GL_COLOR, 0, farClear);
+                glClearBufferfvFn(GL_DEPTH, 0, &depthOne);
+                glViewport(0, 0, shadowSize, shadowSize);
+                drawPacked(shadowPacked, shadowCmds);
+            }
+            else
+                drawPointShadow(light.position, -1);
         }
         else
-            drawPointShadow(light.position, -1);
-        ++lightIndex;
-    }
-    for (const auto &object : scene.objects())
-    {
-        if (lightIndex >= kGpuMaxLights)
-            break;
-        const Material material = object->material();
-        if (material.emission <= 0.01)
-            continue;
-        const Vec3 eye = object->worldPosition();
-        const int skipMesh = slotFor(object->id);
-        drawPointShadow(eye, skipMesh);
+        {
+            const Object &object = *scene.objects()[pick.index];
+            drawPointShadow(object.displayWorldPosition(), slotFor(object.id()));
+        }
         ++lightIndex;
     }
     glDisable(GL_CULL_FACE);
@@ -366,7 +436,12 @@ void GpuRayTracer::rasterizeMeshes(const Camera &camera, const Scene &scene, con
     glClearBufferfvFn(GL_COLOR, 1, zero);
     glClearBufferfvFn(GL_COLOR, 2, zero);
     glClearBufferfvFn(GL_DEPTH, 0, &depthOne);
-    glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+    std::vector<float> colorPacked;
+    std::vector<DrawCmd> colorCmds;
+    packPass(true, 0, colorPacked, colorCmds);
+    drawPacked(colorPacked, colorCmds);
+    packPass(true, 1, colorPacked, colorCmds);
+    drawPacked(colorPacked, colorCmds);
     glDisable(GL_DEPTH_TEST);
     glBindVertexArrayFn(0);
 }

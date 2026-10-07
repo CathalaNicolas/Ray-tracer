@@ -1,51 +1,46 @@
 # Collision
 
-Play movement uses a sphere swept against simple shapes. It is not a physics world. The queries live in `engine/include/Collision.hpp` and `engine/src/Collision.cpp`. `stepPlay` in `engine/src/Play.cpp` moves the player. `castPlayRay` is the look query.
+Play movement is a Jolt capsule. `stepPlay` in `engine/src/Play.cpp` owns a `std::unique_ptr<jolt_play::World>` on `PlayState`. Each tick it upserts Jolt bodies for scene solids (create once, skip unchanged), drives `CharacterVirtual` from `PlayInput` / `Command`, calls `PhysicsSystem::Update` through Jolt's `JobSystemThreadPool`, then writes the capsule feet back onto the player sphere (center = feet + `(0, radius, 0)`). `castPlayRay` is still the look query. The chase camera is still a scene ray.
 
-## Shapes
+`Collision.cpp` is gone. Pickup / use / hazard / goal overlap still uses `Object::overlapsSphere` (`contactSphere` in `Object.cpp` and `MeshBvh.cpp`). `Hit` lives in `engine/include/Hit.hpp`.
 
-`sphereHitSphere`, `sphereHitAabb`, `sphereHitPlane`, and `sphereHitMesh` return a `Hit`: whether it hit, a normal, and a penetration depth. `resolveSphere` pushes the center out along that normal. Intersection helpers cover sphere-sphere and sphere-AABB without producing a normal.
+If `jobs::init()` was not called, `World` is invalid and `stepPlay` logs an error and returns without moving the player.
 
-What counts as solid for the player:
+## Solids in Jolt
 
-| Object | Solid when |
+`play_detail::isSolid` (`engine/include/PlayDetail.hpp`) is the same role test as before. Layer 0 blocks the player and the chase camera. Layer 1 blocks the player and lets the camera through. The demo door is layer 1.
+
+| Scene shape | Jolt body |
 | --- | --- |
-| The player sphere | Never |
-| `pickup`, `trigger`, `goal`, `use`, `hazard`, `spawn`, or `spawner` | Never |
-| Any other sphere | When its tag is not `player` |
-| Plane | Always, even with an empty tag |
-| Mesh | Tag is `solid` or empty. The shape is the triangles. The player sphere is tested in the mesh's local space through the BVH. A high branch does not fill the empty space under it |
+| Player sphere | Capsule at the feet (`CharacterVirtual`, padding 0.02, cylinder half-height 0.05, radius = `bodyRadius`) |
+| Other sphere | `SphereShape` at the world center |
+| Plane | A thin box (half-extent 512 × 0.5 × 512) with its top on the plane |
+| Mesh | `MeshShape` from `MeshGeometry` positions and indices (shared verts from cook/load), scaled by `worldScaleVec()` axes, cached by `contentHash` and the three scale components (kinematic when `Motion` is active or the mesh is a Use tween target; kinematic create supplies a dummy mass because `MeshShape` cannot compute one). Static bodies update when position or rotation changes |
+| Terrain | `HeightFieldShape` from `TerrainTile` heights, cell size `tileSize/(sampleCount-1)`, holes as `cNoCollisionValue`. Always static. The visual mesh is not a Jolt body |
 
-A downward probe of `ground_probe` (default `0.08`) marks the player grounded when a solid hit has a normal whose Y is above `0.5`.
+The mesh BVH stays for the ray tracer, `castPlayRay`, editor picking, and overlap tests.
 
-Each object has a layer. `0` is the default and is omitted from the scene file. It blocks the player and the chase camera. `1` is written as `layer 1`. It still blocks the player. `play_detail::isSolid` in `engine/include/PlayDetail.hpp` is the one solid test. The player call leaves `forCamera` false, so layer 1 stays solid. `chaseCameraPosition` calls it with `forCamera` true, which skips every layer other than 0. The demo door is layer 1. The inspector combo is Player and camera, or Player only.
+A downward `CharacterVirtual` ground state replaces the old `ground_probe` sphere probe. Walk-stairs step-up is `0.35` plus 0.05 of padding. Character dt is split so no substep is longer than 1/60 s. `PhysicsSystem::Update` runs once per `World::step` with one collision step.
 
-The editor Colliders checkbox draws spheres and mesh boxes with `play_detail::isSolid`. Every plane is drawn as a patch. Light bounds and named-camera frustums are in that same overlay. See `docs/debug-and-performance.md`.
-
-Sphere and plane collision use world radius and world normal, so a parented or scaled shape matches what is drawn. `castPlayRay` skips tags the player walks through (`pickup`, `trigger`, `hazard`, `spawn`, `spawner`, `player`) so a spawn sphere does not steal the look from a `use` or `goal` behind it. Solids still stop the ray.
+Save/load stores capsule feet, velocity, radius, grounded, `CharacterVirtual::SaveState` bytes, and `PhysicsSystem::SaveState` bytes on `SimPlayBlob` (`kSimPlayBitseryVersion` 3). Load drops the old `World`, then `primePlayPhysics` recreates solids, restores the physics system, spawns the capsule (`CharacterID(1)`), and restores character state. If those bytes are missing, it falls back to velocity plus `RefreshContacts`.
 
 ## Character step
 
-`stepPlay` finds the first sphere tagged `player`. If there is none, `playerId` stays `-1` and the step does nothing. Pause returns immediately.
+`stepPlay` finds the first sphere tagged `player`. If there is none, `playerId` stays at invalid `EntityId` 0 and the step does nothing. `SimSession::begin` also sets `playerId` through `syncPlayPlayerId`. A non-empty `PlayState::result` (`won` / `lost`) returns immediately. `PlayState::paused` is unused by the integrator; win/lose do not set it. The HUD snapshot’s `paused` flag is true when `result` is non-empty. Editor Escape pause is `ViewState::paused` and does not set `PlayState::paused`.
 
-Otherwise, with `dt` of `1/60`:
+Otherwise, with `dt` of `1/30`:
 
-- Wish direction is camera-forward on XZ plus camera-right, then normalized. Speed is 4.
-- Gravity is `-12`. Jump speed is `5`, and only while grounded. Vertical speed is `PlayState::verticalVelocity`.
-- Motion is split into at least 4 substeps, more when the distance would exceed half the radius, and at most 32.
-- Each substep moves, then up to 4 resolve passes. A hit slides the velocity along the normal so the player does not stick.
-- If that slide stops horizontal motion against a surface no taller than `0.35` above the feet, the step is retried from on top of that surface and kept when it moves farther forward. A jump, while vertical speed is `1.5` or more, does not step. The grey `Step` pebble in the demo is one of these curbs.
-- Before the player is integrated, moving solids advance. After events, a Use action may slide its target. If the player is grounded on either kind of solid, that position change is added to the player. See `docs/animation.md`.
-- After the substeps, pickups, triggers, the goal, Use, and hazards are tested by overlap. `castPlayRay` then shoots from the player center along the camera look for `kPlayRayDistance` (3). It keeps the closest object other than the player, skipping tags the player walks through. A `use` or `goal` that the ray hits, and that the player is not already overlapping, gets the same F prompt and the same F result. A `spawn` point turns a hazard or a fall into a teleport. See `docs/gameplay-objects.md`.
+- Wish direction is camera-forward on XZ plus camera-right, then normalized. Speed is 4 (`EngineSettings::moveSpeed`).
+- Gravity is `-12`. Jump speed is `5`, only while Jolt reports OnGround.
+- Motions advance first so kinematic targets match the scene. Jolt ground velocity carries the player on a moving solid. There is no extra C++ carry.
+- After the capsule step, pickups, triggers, the goal, Use, and hazards are tested by sphere overlap at the player center. `castPlayRay` then shoots from the player center along the camera look for `kPlayRayDistance` (3). It keeps the closest object other than the player, skipping tags the player walks through. A `use` or `goal` that the ray hits, and that the player is not already overlapping, gets the same F prompt and the same F result. A `spawn` point turns a hazard or a fall into a teleport (and `setCapsuleFeet` on the next tick). See `docs/gameplay-objects.md`.
 
-`runPlaySelfTests` covers these cases and returns the failure count. `engine/src/self_test.cpp` adds that count to the engine total. Failures print. Success prints nothing of its own.
+`runPlaySelfTests` covers rest-on-plane, a blocking solid, pickup events, and kinematic platform carry through `SimSession::step`. `tests/main.cpp` still has the CharacterVirtual spike (fall, 0.35 curb, carry, mesh floor). `engine/src/SelfTestEntt.cpp` adds the play failure count to the engine total.
 
 Editor picking is a separate ray through `Scene::intersect`. It is not this collision API.
 
 ## Not built
 
-- A capsule.
-- A simplified hull. The collider is every triangle.
-- A third layer, or a layer that blocks the camera and not the player.
-- Sphere casts and box casts. The camera ray is the only gameplay cast.
-- Step-up higher than `0.35`.
+- A simplified hull authored in the editor.
+- Rigid-body dynamics (mass, joints, sleeping). Platforms are kinematic boxes; other meshes are static or kinematic `MeshShape`.
+- Continuous collision.

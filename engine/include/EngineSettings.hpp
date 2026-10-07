@@ -40,6 +40,9 @@ struct EngineSettings
     int meshStackLimit = 24;
     double bloomThreshold = 0.88;
     double bloomStrength = 0.85;
+    double viewDistance = 2000;
+    int shadowMapSize = 1024;
+    double particleDensity = 1;
 
     // Debug overlay
     double frustumNear = 0.35;

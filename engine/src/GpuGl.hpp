@@ -28,7 +28,7 @@ typedef char GLchar;
 #endif
 #ifndef GL_FRAMEBUFFER_COMPLETE
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
-#endif>
+#endif
 
 #ifndef GL_RGBA32F
 #define GL_RGBA32F 0x8814
@@ -60,8 +60,14 @@ typedef char GLchar;
 #ifndef GL_ARRAY_BUFFER
 #define GL_ARRAY_BUFFER 0x8892
 #endif
+#ifndef GL_ELEMENT_ARRAY_BUFFER
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#endif
 #ifndef GL_DYNAMIC_DRAW
 #define GL_DYNAMIC_DRAW 0x88E8
+#endif
+#ifndef GL_UNSIGNED_INT
+#define GL_UNSIGNED_INT 0x1405
 #endif
 #ifndef GL_DEPTH_COMPONENT24
 #define GL_DEPTH_COMPONENT24 0x81A6
@@ -84,6 +90,24 @@ typedef char GLchar;
 #ifndef GL_COLOR_ATTACHMENT2
 #define GL_COLOR_ATTACHMENT2 0x8CE2
 #endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT3_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT3_EXT 0x83F2
+#endif
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT5_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_COMPRESSED_RG_RGTC2
+#define GL_COMPRESSED_RG_RGTC2 0x8DBD
+#endif
+#ifndef GL_COMPRESSED_RGBA_BPTC_UNORM_ARB
+#define GL_COMPRESSED_RGBA_BPTC_UNORM_ARB 0x8E8C
+#endif
+#ifndef GL_LINEAR_MIPMAP_LINEAR
+#define GL_LINEAR_MIPMAP_LINEAR 0x2703
+#endif
 
 #include <string>
 
@@ -105,6 +129,8 @@ using GlUniform1i = void(APIENTRY *)(GLint, GLint);
 using GlUniform1f = void(APIENTRY *)(GLint, GLfloat);
 using GlActiveTexture = void(APIENTRY *)(GLenum);
 using GlTexImage3D = void(APIENTRY *)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+using GlCompressedTexImage2D = void(APIENTRY *)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void *);
+using GlCompressedTexImage3D = void(APIENTRY *)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLsizei, GLint, GLsizei, const void *);
 using GlUniform3f = void(APIENTRY *)(GLint, GLfloat, GLfloat, GLfloat);
 using GlUniform4fv = void(APIENTRY *)(GLint, GLsizei, const GLfloat *);
 using GlUniform1iv = void(APIENTRY *)(GLint, GLsizei, const GLint *);
@@ -135,6 +161,8 @@ extern GlUniform1i glUniform1iFn;
 extern GlUniform1f glUniform1fFn;
 extern GlActiveTexture glActiveTextureFn;
 extern GlTexImage3D glTexImage3DFn;
+extern GlCompressedTexImage2D glCompressedTexImage2DFn;
+extern GlCompressedTexImage3D glCompressedTexImage3DFn;
 extern GlUniform3f glUniform3fFn;
 extern GlUniform4fv glUniform4fvFn;
 extern GlUniform1iv glUniform1ivFn;
@@ -152,6 +180,9 @@ using GlBufferData = void(APIENTRY *)(GLenum, ptrdiff_t, const void *, GLenum);
 using GlDeleteBuffers = void(APIENTRY *)(GLsizei, const GLuint *);
 using GlEnableVertexAttribArray = void(APIENTRY *)(GLuint);
 using GlVertexAttribPointer = void(APIENTRY *)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void *);
+using GlVertexAttribDivisor = void(APIENTRY *)(GLuint, GLuint);
+using GlDrawArraysInstanced = void(APIENTRY *)(GLenum, GLint, GLsizei, GLsizei);
+using GlDrawElementsInstanced = void(APIENTRY *)(GLenum, GLsizei, GLenum, const void *, GLsizei);
 using GlUniformMatrix4fv = void(APIENTRY *)(GLint, GLsizei, GLboolean, const GLfloat *);
 using GlDrawBuffers = void(APIENTRY *)(GLsizei, const GLenum *);
 using GlFramebufferTextureLayer = void(APIENTRY *)(GLenum, GLenum, GLuint, GLint, GLint);
@@ -168,6 +199,9 @@ extern GlBufferData glBufferDataFn;
 extern GlDeleteBuffers glDeleteBuffersFn;
 extern GlEnableVertexAttribArray glEnableVertexAttribArrayFn;
 extern GlVertexAttribPointer glVertexAttribPointerFn;
+extern GlVertexAttribDivisor glVertexAttribDivisorFn;
+extern GlDrawArraysInstanced glDrawArraysInstancedFn;
+extern GlDrawElementsInstanced glDrawElementsInstancedFn;
 extern GlUniformMatrix4fv glUniformMatrix4fvFn;
 extern GlDrawBuffers glDrawBuffersFn;
 extern GlFramebufferTextureLayer glFramebufferTextureLayerFn;
@@ -185,6 +219,7 @@ T loadGl(const char *name)
 }
 
 void configureTexture(GLenum target, GLint filter);
+void configureTextureMips(GLenum target, GLint filter, int maxLevel);
 GLuint compileShader(GLenum type, const char *source, std::string &error);
 
 #endif

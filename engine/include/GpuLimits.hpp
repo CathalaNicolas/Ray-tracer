@@ -52,19 +52,19 @@ inline GpuSceneLimits gpuSceneLimits(const Scene &scene)
 
         explicit CountSink(GpuSceneLimits &limits) : limits(limits) {}
 
-        void sphere(const Hittable &object, const Vec3 &, double) override
+        void sphere(const Object &object, const Vec3 &, double) override
         {
             ++limits.spheres;
             if (object.material().transmission > 0.001)
                 limits.hasGlass = true;
         }
-        void plane(const Hittable &object, const Vec3 &, const Vec3 &, bool, const Vec3 &, double) override
+        void plane(const Object &object, const Vec3 &, const Vec3 &, bool, const Vec3 &, double) override
         {
             ++limits.planes;
             if (object.material().transmission > 0.001)
                 limits.hasGlass = true;
         }
-        void mesh(const Mesh &object) override
+        void mesh(const Object &object) override
         {
             ++limits.meshes;
             if (object.material().transmission > 0.001)
@@ -87,7 +87,7 @@ inline GpuSceneLimits gpuSceneLimits(const Scene &scene)
             textures.insert(object->material().albedoMap);
         if (object->material().transmission > 0.001)
             limits.hasGlass = true;
-        object->contributeGpu(sink);
+        gpu_detail::contribute(*object, sink);
     }
     limits.lights = static_cast<int>(scene.lights().size());
     limits.textures = static_cast<int>(textures.size());

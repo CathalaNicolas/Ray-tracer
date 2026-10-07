@@ -1,4 +1,6 @@
 dist/
+build/
+build-diligent/
 *.o
 *.obj
 !assets/*.obj
@@ -8,3 +10,4 @@ raytracer-debug.txt
 *.dll
 *.a
 render.png
+plans

@@ -168,10 +168,16 @@ int main(int argc, char **argv)
     }
     if (options.selfTest)
         return runSelfTests();
+#if defined(RAYTRACER_DILIGENT)
+    // M4: Diligent is the primary interactive view; GL Whitted stays for --self-test / stills.
+    if (options.window || options.game)
+        return runEditorDiligent(options.width, options.height);
+#else
     if (options.game)
         return runEditor(options.width, options.height, options.samples, options.depth, true);
     if (options.window)
         return runEditor(options.width, options.height, options.samples, options.depth, false);
+#endif
 
     Scene scene = createDemoScene();
     Camera camera = createDemoCamera(static_cast<double>(options.width) / options.height);

@@ -1,21 +1,37 @@
 # Build, platform, and content
 
-The Windows build uses MSVC from Visual Studio Build Tools 2022 and the Autodesk FBX SDK 2020.3.11. The Makefile calls `vcvars64.bat`, then `cl` and `link`. Flags are `/std:c++17 /EHsc /O2 /MD /bigobj`. Engine and editor translation units use `/W4`. `third_party` and the stb image wrappers stay at `/W0`.
+## Diligent path (primary interactive view)
 
-Object files go in `dist/`. `raytracer.exe` stays in the project root so it still finds `assets/`. `build.bat` in the project root runs that build. Double-click it, or run it from a terminal. It pauses at the end so the result stays on screen.
+CMake is the maintained build for the Diligent clustered-forward path. From the repo root:
 
-Runtime code lives in `engine/include` and `engine/src`. The window, ImGui panels, and collider overlay live in `editor/include` and `editor/src`. `editor/src/main.cpp` is the process entry. Both trees are on the compiler include path, and sources still include headers by file name.
+```bash
+cmake -S . -B build-diligent -G Ninja -DRAYTRACER_DILIGENT=ON -DRAYTRACER_BUILD_EDITOR=ON
+cmake --build build-diligent --target diligent_smoke raytracer
+```
 
-The link line includes `user32`, `gdi32`, `opengl32`, `dwmapi`, `comdlg32`, `advapi32`, `bcrypt`, `winmm`, and the FBX SDK static libraries `libfbxsdk-md`, `libxml2-md`, and `zlib-md`. OpenGL is 3.3. The shader is GLSL 330.
+- **DiligentCore / DiligentTools / DiligentFX** come in via CMake FetchContent at tag `v2.5.6`. Tools/FX headers expect sibling folders named `DiligentCore` and `DiligentTools`; the root `CMakeLists.txt` creates those symlinks under the build `_deps` tree before adding the subdirectories.
+- **Backend:** Direct3D 12 on Windows (`RAYTRACER_DILIGENT_D3D12`), Vulkan elsewhere (`RAYTRACER_DILIGENT_VULKAN`). OpenGL is not used for the main window.
+- **SDL3** (static, FetchContent) owns the window and native handle (`HWND` / X11). No `SDL_WINDOW_OPENGL`.
+- **Targets:** `raytracer_core` (no GPU), `raytracer_rhi` (Diligent RHI + FX), `diligent_smoke` (clear + opaque draw), `raytracer` (SDL + Diligent editor). On Windows, `raytracer_gl` still links for `--self-test` / still frames only.
+- Run smoke and the editor from the repo root so `assets/` resolves. Linux CI can use lavapipe (`VK_ICD_FILENAMES=.../lvp_icd.json`).
 
-The non-Windows Makefile branch is still g++. Its `OBJS` list is stale. `Mesh.cpp` is not compiled there because it includes the FBX SDK. The `GpuRayTracer` stub matches the current `render` signature so that file alone compiles; a full non-Windows link is not maintained.
+Shaders for the Diligent path live in `engine/shaders/` (HLSL). GLSL Whitted shaders stay in `GpuShaders.cpp` / `GpuShaderTrace.cpp` for the still path.
 
-Assets the demo needs sit in `assets/`: `tree-trunk.obj` and `tree-crown.obj`. Paths in a scene file are stored as written. Moving the exe without those files, or without the FBX runtime pieces the SDK requires, is not a supported package.
+## Legacy Makefile (Windows OpenGL still / old editor)
+
+The Windows Makefile build still uses MSVC from Visual Studio Build Tools 2022 and the Autodesk FBX SDK 2020.3.11. The Makefile calls `vcvars64.bat`, then `cl` and `link`. Flags are `/std:c++17 /EHsc /O2 /MD /bigobj`. Engine and editor translation units use `/W4`. `third_party` and the stb image wrappers stay at `/W0`.
+
+Object files go in `dist/`. `raytracer.exe` stays in the project root so it still finds `assets/`. `build.bat` in the project root runs that build.
+
+Runtime code lives in `engine/include` and `engine/src`. The legacy Win32+GL editor lives in `editor/src/editor.cpp` and related files; the Diligent interactive shell is `editor/src/EditorDiligent.cpp`. `editor/src/main.cpp` is the process entry and prefers Diligent when `RAYTRACER_DILIGENT` is defined.
+
+The legacy link line includes `user32`, `gdi32`, `opengl32`, and the FBX SDK static libraries. OpenGL is 3.3 for stills / self-test only once Diligent is enabled. Mesh OBJ load works without FBX (`RAYTRACER_HAS_FBX` gates the SDK).
+
+Assets the demo needs sit in `assets/`: `tree-trunk.obj`, `tree-crown.obj`, `door.obj`, `platform.obj`.
 
 ## Not built
 
 - A folder a friend can run without this repo.
 - Asset paths rewritten for that folder.
-- A maintained build for another OS.
 - An installer or a zip of the exe, assets, and runtime libraries.
 - A content-license note for third-party meshes and the FBX SDK.

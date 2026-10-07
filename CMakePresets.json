@@ -1,0 +1,24 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "diligent",
+      "displayName": "Diligent (Ninja)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-diligent",
+      "cacheVariables": {
+        "RAYTRACER_DILIGENT": "ON",
+        "RAYTRACER_BUILD_EDITOR": "ON",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "diligent",
+      "configurePreset": "diligent",
+      "targets": ["diligent_smoke", "raytracer"]
+    }
+  ]
+}

@@ -1,6 +1,12 @@
 # Editor GUI
 
-The editor UI is ImGui. `editor/src/editor.cpp` owns the window and the frame. `EditorUi.cpp` draws the panels, `EditorScene.cpp` the selection and gizmos, `EditorWidgets.cpp` the field editors and the settings file, `EditorPlay.cpp` the chase camera, HUD, pause, and title, and `EditorHistory.cpp` undo. Shared types are in `editor/include/EditorInternal.hpp`. Docking layouts are not saved. `io.IniFilename` is null, so ImGui does not write an ini file.
+## Diligent primary shell
+
+When built with `RAYTRACER_DILIGENT`, the interactive UI is `editor/src/EditorDiligent.cpp`: SDL window, Diligent swapchain, ImGui via `GfxDevice::imgui*`, opaque `GfxView` every frame, and a Quality menu bound to `GfxQuality` / `EngineSettings`. There is no OpenGL context on the main window and no `GpuRayTracer` texture in the view. The full outliner/inspector toolset from the legacy editor is not yet ported onto this shell; orbit + play toggle + quality settings are.
+
+## Legacy Win32+GL editor
+
+Without Diligent (or for historical reference), the editor UI is ImGui on Win32+GL. `editor/src/editor.cpp` owns the window and the frame. `EditorUi.cpp` draws the panels, `EditorScene.cpp` the selection and gizmos, `EditorWidgets.cpp` the field editors and the settings file, `EditorPlay.cpp` the chase camera, HUD, pause, and title, and `EditorHistory.cpp` undo. Shared types are in `editor/include/EditorInternal.hpp`. Docking layouts are not saved. `io.IniFilename` is null, so ImGui does not write an ini file.
 
 Move, Rotate, and Scale sit on the toolbar. The matching gizmo is drawn on the selected object while not playing. A drag on a handle pushes one undo step, then moves that object along the world axis, rotates a mesh or a plane, or scales a mesh or a sphere. A click that misses the gizmo still picks an object or orbits.
 

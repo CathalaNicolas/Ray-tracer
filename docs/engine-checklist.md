@@ -35,7 +35,7 @@ Each section has a longer page. Those pages describe how the current code behave
 | Debug and performance | [debug-and-performance.md](debug-and-performance.md) |
 | Build, platform, and content | [build-and-platform.md](build-and-platform.md) |
 
-The renderer is a Whitted ray tracer with mesh rasterization, shadow maps, and one GLSL shader. The editor places spheres, planes, and meshes, saves a version-1 scene, and can play. Play runs a fixed step on the sphere tagged `player`, with a chase camera, pickups, a trigger, a pause menu, and a beep. `raytracer.exe --game` starts in that mode without the editor panels. Mesh files are shared across placements.
+The **primary interactive view** is clustered forward on Diligent (D3D12 on Windows, Vulkan for Linux bring-up): `GfxDevice` / `GfxView` / `GfxCluster` / `GfxFx`, HLSL under `engine/shaders/`. The Whitted OpenGL path (`GpuRayTracer`) remains for progressive stills and `--self-test` on Windows only; GL `GpuLimits` are not raised. CMake + FetchContent builds the Diligent path; see [build-and-platform.md](build-and-platform.md). The editor places spheres, planes, and meshes, saves a version-1 scene, and can play. `raytracer` / `raytracer.exe --game` opens the Diligent view when built with `RAYTRACER_DILIGENT`.
 
 ## 1. Application loop
 
@@ -100,10 +100,10 @@ The first version is in place. The lines below it are later work.
 - **missing** — Decals and projected textures
 - **partial** — Particles: eight billboards burst when a pickup is collected and when a hazard costs health. They live in the shading shader. No trails
 - **missing** — Skeletal meshes and morph targets
-- **missing** — Instanced drawing on the GPU, not only shared triangle storage
-- **missing** — Frustum culling and occlusion culling
-- **missing** — A forward or deferred raster of the whole scene if ray tracing stops being the look
-- **partial** — Bloom on the display image: a bright-pass blur added after tone mapping. It is skipped when linear output is on. No color grading, vignette, motion blur, or extra anti-aliasing
+- **partial** — Instanced opaque mesh draw on the Diligent path (`GfxView`); GL still path still shares triangle storage without instances
+- **missing** — Frustum culling and occlusion culling on Diligent (CPU frustum helpers exist for later)
+- **partial** — Diligent clustered forward is the primary interactive look; GL Whitted remains for stills / self-test
+- **partial** — DiligentFX bloom / CSM / sky wired through `GfxFx` + quality settings; GL still bloom remains for progressive frames
 - **missing** — Render layers (world, effects, UI)
 - **missing** — Screenshot and video capture as a feature, not only Save PNG
 
@@ -124,8 +124,8 @@ The first version is in place. The lines below it are later work.
 - **partial** — One light bounce off a sphere whose reflectivity is above 0.35 and whose transmission is 0, on the camera's first hit only. Up to 8 spheres. The mirror the surface faces, among the first four, can send that light on from each of the others. The solver stops once the reflection matches. The bounce is the light's intensity faded from the last bounce point to the surface, times each sphere's albedo and reflectivity, and it is kept only when the reflected ray hits the surface. An object between bounce points leaves a shadow that moves with the spheres. The mirrors and the emissive object that made the light are not blockers of that bounce. Planes, meshes, and later reflection rays do not bounce light. Settings → Mirror bounces writes `mirrors` in `raytracer-settings.txt`. Off uploads `uMirrorCount` 0. A file without that line stays on
 - **missing** — Light cookies and colored shadows
 - **missing** — Baked lightmaps
-- **missing** — More than 8 lights, or a clustered way to pick the lights that matter
-- **missing** — Day and night, or any animated sky
+- **partial** — Diligent path: clustered light lists (no 8-light rank). GL still path still caps at 8
+- **partial** — DiligentFX atmospheric sky wrapper (`GfxFx`); no full day/night clock yet
 
 ## 8. Cameras
 

@@ -4,7 +4,9 @@
 #include "GpuContribute.hpp"
 #include "SceneWrite.hpp"
 
+#if defined(RAYTRACER_HAS_FBX)
 #include <fbxsdk.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +18,12 @@
 
 namespace
 {
+
+std::string pathUtf8(const std::filesystem::path &path)
+{
+    const std::u8string bytes = path.u8string();
+    return std::string(bytes.begin(), bytes.end());
+}
 
 Vec3 min3(const Vec3 &a, const Vec3 &b)
 {
@@ -220,6 +228,7 @@ void fitToGround(std::vector<MeshTri> &triangles)
     }
 }
 
+#if defined(RAYTRACER_HAS_FBX)
 void appendFbxMesh(FbxNode *node, std::vector<MeshTri> &triangles)
 {
     FbxMesh *mesh = node->GetMesh();
@@ -316,6 +325,15 @@ bool loadFbx(const std::filesystem::path &path, std::vector<MeshTri> &triangles,
     }
     return true;
 }
+#else
+bool loadFbx(const std::filesystem::path &path, std::vector<MeshTri> &triangles, std::string &error)
+{
+    (void)path;
+    (void)triangles;
+    error = "FBX SDK not linked in this build";
+    return false;
+}
+#endif
 
 bool loadObj(const std::filesystem::path &path, std::vector<MeshTri> &triangles, std::string &error)
 {
@@ -442,7 +460,7 @@ std::string geometryKey(const std::filesystem::path &path)
 {
     std::error_code error;
     const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, error);
-    std::string key = (error ? path : canonical).u8string();
+    std::string key = pathUtf8(error ? path : canonical);
     const auto stamp = std::filesystem::last_write_time(path, error);
     if (!error)
     {
@@ -508,7 +526,7 @@ bool Mesh::load(const std::filesystem::path &path, std::string &error)
         if (found != cache.end())
         {
             geometry_ = found->second;
-            sourcePath_ = path.u8string();
+            sourcePath_ = pathUtf8(path);
             std::error_code stampError;
             const auto stamp = std::filesystem::last_write_time(path, stampError);
             sourceStamp_ = stampError ? 0 : static_cast<std::int64_t>(stamp.time_since_epoch().count());
@@ -517,7 +535,7 @@ bool Mesh::load(const std::filesystem::path &path, std::string &error)
         }
     }
 
-    std::string extension = path.extension().string();
+    std::string extension = pathUtf8(path.extension());
     for (char &character : extension)
         character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
 
@@ -529,7 +547,7 @@ bool Mesh::load(const std::filesystem::path &path, std::string &error)
     fitToGround(triangles);
     auto geometry = std::make_shared<MeshGeometry>();
     geometry->triangles = std::move(triangles);
-    geometry->sourcePath = path.u8string();
+    geometry->sourcePath = pathUtf8(path);
     finishGeometry(*geometry);
     sourcePath_ = geometry->sourcePath;
     geometry_ = std::move(geometry);

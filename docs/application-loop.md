@@ -1,27 +1,36 @@
 # Application loop
 
-The window, the play simulation, and the GPU render share one thread in `editor/src/editor.cpp`. `editor/src/main.cpp` chooses the mode and then calls `runEditor`. The clock helpers are `clampFrameDt` and `takePlaySteps` in `engine/include/Play.hpp`.
+With `RAYTRACER_DILIGENT`, `editor/src/main.cpp` calls `runEditorDiligent` for windowed / `--game` modes. That loop lives in `editor/src/EditorDiligent.cpp`: SDL window (no OpenGL), `GfxDevice` begin/clear/draw/ImGui/present, and `GfxView` every frame. The legacy Win32+GL loop in `editor/src/editor.cpp` remains for builds without Diligent. Clock helpers `clampFrameDt` and `takePlaySteps` stay in `engine/include/Play.hpp` for the GL play path.
 
 ## Modes
 
 | Invocation | What starts |
 | --- | --- |
-| `raytracer.exe` | Editor. The demo scene is loaded. Play is off. |
-| `raytracer.exe --game` | Same window, title `Game`. A title screen with Play, Volume, and Quit sits in front of the round. Play starts the round. Toolbars, the outliner, and the inspector stay hidden. |
-| `raytracer.exe --no-window` | One still image, no window. Optional `--ppm` or `--png`. |
-| `raytracer.exe --self-test` | Checks, then exit. No window. |
+| `raytracer` / `raytracer.exe` | Diligent editor view when built with Diligent; demo scene, orbit camera, quality menu. |
+| `raytracer --game` | Same Diligent primary view (play toggle in the menu bar). |
+| `raytracer --no-window` | One still image via `RayTracer` (Windows GL host). Optional `--ppm` or `--png`. |
+| `raytracer --self-test` | Checks on Windows GL host; stub skip on Linux Diligent bring-up. |
 
 `--game` and `--self-test` do not change scene version 1.
 
-## Startup and shutdown
+## Diligent startup and shutdown
+
+1. `SDL_Init` + create a resizable window **without** `SDL_WINDOW_OPENGL`.
+2. `GfxDevice::init` (D3D12 or Vulkan factory → device → swapchain) and Diligent ImGui.
+3. `GfxView::init` (opaque PSO) and optional `GfxFx::init` from `GfxQuality`.
+4. Load `createDemoScene()`, upload meshes/lights, enter the frame loop.
+
+Shutdown tears down FX, view, ImGui, device, window, then SDL.
+
+## Legacy GL startup (non-Diligent builds)
 
 1. Register the window class, create the window, and create the OpenGL context.
 2. Show the window and start ImGui.
 3. Draw one frame that says `Loading...` and swap it.
-4. Build the demo scene, then initialize the GPU renderer. The performance clock starts after that, so the load does not become the first play frame.
+4. Build the demo scene, then initialize the GPU renderer.
 5. Run the frame loop.
 
-Shutdown releases the GPU renderer, the display texture, ImGui, the GL context, and the window, then unregisters the class. A failed GL context destroys the window and returns before the loop.
+Shutdown releases the GPU renderer, the display texture, ImGui, the GL context, and the window.
 
 ## One frame
 

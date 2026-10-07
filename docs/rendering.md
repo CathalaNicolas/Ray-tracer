@@ -1,6 +1,20 @@
 # Rendering
 
-Shading is one GLSL 330 fragment shader, `kFragmentShader` in `engine/src/GpuShaderTrace.cpp`. The smaller shaders stay in `engine/src/GpuShaders.cpp`. The string is split into adjacent raw literals because MSVC rejects a literal past about 16380 characters. Do not merge it back into one literal. The active program is that shader. There is no second mesh shader.
+## Diligent primary view (clustered forward)
+
+Interactive play and the editor orbit view draw through Diligent (`GfxDevice`, `GfxView`, `GfxFx`):
+
+- Window and swapchain: SDL native handle → D3D12 (Windows) or Vulkan (Linux bring-up). No OpenGL context on the main window.
+- Opaque pass: HLSL `engine/shaders/OpaqueVS.hlsl` / `OpaquePS.hlsl`, instanced indexed meshes, camera-relative float positions, runtime-sized vertex/instance buffers (GL `GpuLimits` mesh caps are not raised).
+- Materials: vertex color × optional albedo texture (1×1 white default; BC/DDS upload helper in `GfxTextures.cpp`).
+- Presentation: `GfxFx` wraps DiligentFX cascaded shadow maps, bloom, and epipolar sky sized from `GfxQuality` / `EngineSettings` (`view_distance`, `shadow_map`, `particle_density`).
+- ImGui: DiligentTools `ImGuiImplDiligent` into the swapchain; SDL feeds input in `EditorDiligent.cpp`.
+
+`diligent_smoke` clears, uploads the demo meshes, and presents a few frames. The editor entry is `runEditorDiligent`.
+
+## Legacy OpenGL still / self-test
+
+Shading for stills is one GLSL 330 fragment shader, `kFragmentShader` in `engine/src/GpuShaderTrace.cpp`. The smaller shaders stay in `engine/src/GpuShaders.cpp`. The string is split into adjacent raw literals because MSVC rejects a literal past about 16380 characters. Do not merge it back into one literal. That path is not the primary editor view once Diligent is enabled.
 
 `engine/src/GpuRender.cpp` uploads the scene and draws. `engine/src/GpuRayTracer.cpp` creates the context, folds samples, and runs bloom. `engine/src/GpuGl.hpp` supplies the GL entry points used on Windows. The repo does not include `GL/glext.h`.
 

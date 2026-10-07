@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(raytracer LANGUAGES CXX)
+project(raytracer LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,7 @@ set(FBX_SDK_ROOT "C:/Program Files/Autodesk/FBX/FBX SDK/2020.3.11" CACHE PATH
   "Autodesk FBX SDK root (same external path the Makefile uses)")
 
 option(RAYTRACER_SHIPPING "Refuse source mesh formats; require cooked .rtm" OFF)
+option(RAYTRACER_DILIGENT "Build Diligent clustered-forward primary view" OFF)
 
 if(NOT EXISTS "${FBX_SDK_ROOT}/include/fbxsdk.h")
   message(FATAL_ERROR
@@ -42,6 +43,76 @@ find_path(MINIAUDIO_INCLUDE_DIR NAMES miniaudio.h REQUIRED)
 add_library(miniaudio INTERFACE)
 add_library(miniaudio::miniaudio ALIAS miniaudio)
 target_include_directories(miniaudio INTERFACE "${MINIAUDIO_INCLUDE_DIR}")
+
+# --- Diligent (Core / Tools / FX) ---------------------------------------------
+# DiligentTools/FX headers use sibling relative includes (../../../DiligentCore).
+# FetchContent places each repo under _deps/<name>-src, so we symlink the
+# expected DiligentCore / DiligentTools names beside them before configuring Tools/FX.
+if(RAYTRACER_DILIGENT)
+  include(FetchContent)
+  if(WIN32)
+    set(DILIGENT_NO_VULKAN ON CACHE BOOL "" FORCE)
+    set(DILIGENT_NO_DIRECT3D12 OFF CACHE BOOL "" FORCE)
+    set(DILIGENT_NO_DIRECT3D11 ON CACHE BOOL "" FORCE)
+  else()
+    set(DILIGENT_NO_VULKAN OFF CACHE BOOL "" FORCE)
+    set(DILIGENT_NO_DIRECT3D12 ON CACHE BOOL "" FORCE)
+    set(DILIGENT_NO_DIRECT3D11 ON CACHE BOOL "" FORCE)
+  endif()
+  set(DILIGENT_NO_OPENGL ON CACHE BOOL "" FORCE)
+  set(DILIGENT_NO_METAL ON CACHE BOOL "" FORCE)
+  set(DILIGENT_NO_WEBGPU ON CACHE BOOL "" FORCE)
+  set(DILIGENT_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+  set(DILIGENT_BUILD_FX ON CACHE BOOL "" FORCE)
+  set(DILIGENT_BUILD_TOOLS ON CACHE BOOL "" FORCE)
+  set(DILIGENT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(DILIGENT_NO_FORMAT_VALIDATION ON CACHE BOOL "" FORCE)
+  set(DILIGENT_NO_RENDER_STATE_PACKAGER ON CACHE BOOL "" FORCE)
+  set(DILIGENT_INSTALL_CORE OFF CACHE BOOL "" FORCE)
+  set(DILIGENT_INSTALL_TOOLS OFF CACHE BOOL "" FORCE)
+  set(DILIGENT_INSTALL_FX OFF CACHE BOOL "" FORCE)
+
+  FetchContent_Declare(
+    DiligentCore
+    GIT_REPOSITORY https://github.com/DiligentGraphics/DiligentCore.git
+    GIT_TAG v2.5.6
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_Declare(
+    DiligentTools
+    GIT_REPOSITORY https://github.com/DiligentGraphics/DiligentTools.git
+    GIT_TAG v2.5.6
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_Declare(
+    DiligentFX
+    GIT_REPOSITORY https://github.com/DiligentGraphics/DiligentFX.git
+    GIT_TAG v2.5.6
+    GIT_SHALLOW TRUE
+  )
+
+  FetchContent_GetProperties(DiligentCore)
+  if(NOT diligentcore_POPULATED)
+    FetchContent_Populate(DiligentCore)
+    file(CREATE_LINK "${diligentcore_SOURCE_DIR}"
+      "${CMAKE_BINARY_DIR}/_deps/DiligentCore" SYMBOLIC)
+    add_subdirectory(${diligentcore_SOURCE_DIR} ${diligentcore_BINARY_DIR})
+  endif()
+
+  FetchContent_GetProperties(DiligentTools)
+  if(NOT diligenttools_POPULATED)
+    FetchContent_Populate(DiligentTools)
+    file(CREATE_LINK "${diligenttools_SOURCE_DIR}"
+      "${CMAKE_BINARY_DIR}/_deps/DiligentTools" SYMBOLIC)
+    add_subdirectory(${diligenttools_SOURCE_DIR} ${diligenttools_BINARY_DIR})
+  endif()
+
+  FetchContent_GetProperties(DiligentFX)
+  if(NOT diligentfx_POPULATED)
+    FetchContent_Populate(DiligentFX)
+    add_subdirectory(${diligentfx_SOURCE_DIR} ${diligentfx_BINARY_DIR})
+  endif()
+endif()
 
 set(RAYTRACER_CORE_SOURCES
   engine/src/Jobs.cpp
@@ -108,6 +179,10 @@ set(RAYTRACER_EDITOR_SOURCES
   editor/src/EditorWidgets.cpp
   editor/src/DebugDraw.cpp
 )
+
+if(RAYTRACER_DILIGENT)
+  list(APPEND RAYTRACER_EDITOR_SOURCES editor/src/EditorDiligent.cpp)
+endif()
 
 set(RAYTRACER_IMGUI_SOURCES
   third_party/imgui/imgui.cpp
@@ -214,6 +289,48 @@ raytracer_set_engine_includes(raytracer_audio)
 target_link_libraries(raytracer_audio PUBLIC raytracer_core)
 target_link_libraries(raytracer_audio PRIVATE miniaudio::miniaudio)
 
+if(RAYTRACER_DILIGENT)
+  set(RAYTRACER_RHI_SOURCES
+    engine/src/GfxDevice.cpp
+    engine/src/GfxView.cpp
+    engine/src/GfxCluster.cpp
+    engine/src/GfxQuality.cpp
+    engine/src/GfxTextures.cpp
+    engine/src/GfxFx.cpp
+  )
+  add_library(raytracer_rhi STATIC ${RAYTRACER_RHI_SOURCES})
+  raytracer_set_engine_includes(raytracer_rhi)
+  target_link_libraries(raytracer_rhi PUBLIC raytracer_core Diligent-GraphicsEngine)
+  if(WIN32)
+    target_link_libraries(raytracer_rhi PUBLIC Diligent-GraphicsEngineD3D12-static)
+    target_compile_definitions(raytracer_rhi PUBLIC RAYTRACER_DILIGENT_D3D12=1)
+  else()
+    target_link_libraries(raytracer_rhi PUBLIC Diligent-GraphicsEngineVk-static)
+    target_compile_definitions(raytracer_rhi PUBLIC RAYTRACER_DILIGENT_VULKAN=1)
+  endif()
+  target_link_libraries(raytracer_rhi PUBLIC
+    Diligent-TextureLoader
+    Diligent-Imgui
+    DiligentFX
+    Diligent-GraphicsTools
+    SDL3::SDL3
+  )
+  target_include_directories(raytracer_rhi PUBLIC
+    "${CMAKE_SOURCE_DIR}/engine/src"
+  )
+  target_compile_definitions(raytracer_rhi PUBLIC RAYTRACER_DILIGENT=1)
+  target_compile_definitions(raytracer_rhi PRIVATE
+    "RAYTRACER_SHADER_DIR=\"${CMAKE_SOURCE_DIR}/engine/shaders\""
+  )
+
+  add_executable(diligent_smoke tools/diligent_smoke.cpp)
+  raytracer_set_exe_output(diligent_smoke)
+  target_link_libraries(diligent_smoke PRIVATE raytracer_rhi)
+  if(WIN32)
+    target_link_libraries(diligent_smoke PRIVATE user32 gdi32)
+  endif()
+endif()
+
 # --- Executables --------------------------------------------------------------
 
 add_executable(raytracer
@@ -231,6 +348,9 @@ target_compile_definitions(raytracer PRIVATE
   _CRT_SECURE_NO_WARNINGS
   _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING
 )
+if(RAYTRACER_DILIGENT)
+  target_compile_definitions(raytracer PRIVATE RAYTRACER_DILIGENT=1)
+endif()
 if(MSVC)
   target_compile_options(raytracer PRIVATE /EHsc /bigobj /W4)
   set_source_files_properties(
@@ -251,6 +371,9 @@ target_link_libraries(raytracer PRIVATE
   comdlg32
   advapi32
 )
+if(RAYTRACER_DILIGENT)
+  target_link_libraries(raytracer PRIVATE raytracer_rhi)
+endif()
 
 # Headless doctest runner: core only (demo OBJ). No render, ImGui, OpenGL, or FBX.
 add_executable(tests tests/main.cpp tests/SimReplayTests.cpp tests/SimSaveTests.cpp tests/TransformTests.cpp

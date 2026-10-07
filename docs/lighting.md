@@ -12,7 +12,13 @@ Lights are `PointLight` values on the scene (`engine/include/Light.hpp`). The ty
 
 The demo uses a key light with radius `0.45` and a dimmer fill aimed back toward the room as a mild spot (outer half-angle 38 degrees, inner 18). Both are saved with the scene. The file writes `radius` and `directional` only when they are set. A spot adds `spot x y z outer inner` and omits that tail when the outer angle is 0. The scene file stays version 1. `spot` is a light-line keyword. An object line that contains it is still an unknown option.
 
-The GPU keeps at most 8 lights. When the scene has 8 or fewer point lights plus emissive objects, they upload in file order. Past that, `rankGpuLights` (`engine/src/GpuLights.cpp`) keeps directional lights first, then the highest `intensity / (1 + falloff * distance²)` to the camera, and `gpuSceneLimits` still warns. A point light, including the Lamp, writes six 90° faces into its shadow layer, three across and two up. Layer resolution is `shadow_map` (default 1024). A mesh on any side of the light stays on one face, so a door that straddles the old seam no longer smears across the floor. The pass draws back faces, and the shader averages 4 taps inside that face. The compare bias is `max(0.004, 0.012*(1-facing))`. A directional light still uses one orthographic map.
+## Diligent clustered lights
+
+The Diligent forward path does **not** rank lights down to eight. `gfxBuildLightClusters` (`GfxCluster.cpp`) assigns every scene light into a 16×9×24 cluster grid; `OpaquePS.hlsl` walks the per-tile index list (with a small fallback when a tile is empty). Quality settings bind through `GfxQuality`: view distance, shadow map resolution, cascade count, bloom, and atmospheric sky.
+
+## GL still path (≤8 lights)
+
+The GL path keeps at most 8 lights. When the scene has 8 or fewer point lights plus emissive objects, they upload in file order. Past that, `rankGpuLights` (`engine/src/GpuLights.cpp`) keeps directional lights first, then the highest `intensity / (1 + falloff * distance²)` to the camera, and `gpuSceneLimits` still warns. A point light, including the Lamp, writes six 90° faces into its shadow layer, three across and two up. Layer resolution is `shadow_map` (default 1024). A mesh on any side of the light stays on one face, so a door that straddles the old seam no longer smears across the floor. The pass draws back faces, and the shader averages 4 taps inside that face. The compare bias is `max(0.004, 0.012*(1-facing))`. A directional light still uses one orthographic map.
 
 ## Emission
 
@@ -24,8 +30,8 @@ A sphere with reflectivity above 0.35 and transmission 0 bounces each light once
 
 ## Not built
 
-- A third mirror in one bounce path, or a second bounce that uses mirror spheres past the first four.
+- A third mirror in one bounce path, or a second bounce that uses mirror spheres past the first four (GL still path).
 - Light cookies and colored shadows.
 - Baked lightmaps.
-- A way to light a scene with more than 8 lights per pixel, or a clustered tile list. `rankGpuLights` only chooses which 8 reach the shader.
-- An animated sky, day and night, or any light that moves on its own.
+- Full GPU cluster build (current Diligent clusters are CPU-side). GL still path still ranks to 8 lights via `rankGpuLights`.
+- Day/night clock driven continuously in the editor (DiligentFX sky wrapper is quality-gated).

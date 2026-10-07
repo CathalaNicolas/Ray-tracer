@@ -1,6 +1,8 @@
 # Materials and shading
 
-One `Material` value sits on each sphere, plane, and mesh. The struct is in `engine/include/Material.hpp`. The shader in `engine/src/GpuShaders.cpp` is the only shading implementation. The CPU tracer and the GPU shader read the same fields.
+One `Material` value sits on each sphere, plane, and mesh. The struct is in `engine/include/Material.hpp`.
+
+The **Diligent opaque PSO** (`OpaquePS.hlsl`) shades with albedo × optional `AlbedoTex`, ambient, and clustered lights. Full Blinn-Phong / maps / glass remain on the **GL still** path in `engine/src/GpuShaders.cpp` / `GpuShaderTrace.cpp`.
 
 ## Fields
 

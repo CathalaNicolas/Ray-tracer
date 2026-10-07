@@ -187,12 +187,21 @@ int main(int argc, char **argv)
         else if (options.game)
         {
             spdlog::info("starting game window {}x{}", options.width, options.height);
+#if defined(RAYTRACER_DILIGENT)
+            // M4: Diligent is the primary interactive view; GL stays for --self-test / stills.
+            exitCode = runEditorDiligent(options.width, options.height);
+#else
             exitCode = runEditor(options.width, options.height, options.samples, options.depth, true);
+#endif
         }
         else if (options.window)
         {
             spdlog::info("starting editor {}x{}", options.width, options.height);
+#if defined(RAYTRACER_DILIGENT)
+            exitCode = runEditorDiligent(options.width, options.height);
+#else
             exitCode = runEditor(options.width, options.height, options.samples, options.depth, false);
+#endif
         }
         else
         {

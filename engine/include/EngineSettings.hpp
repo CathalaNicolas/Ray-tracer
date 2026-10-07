@@ -40,6 +40,7 @@ struct EngineSettings
     int meshStackLimit = 24;
     double bloomThreshold = 0.88;
     double bloomStrength = 0.85;
+    // Shared by GL still path and Diligent quality (`view_distance` / `shadow_map`).
     double viewDistance = 2000;
     int shadowMapSize = 1024;
     double particleDensity = 1;

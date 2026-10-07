@@ -43,6 +43,16 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDebugDLL"
       }
+    },
+    {
+      "name": "diligent",
+      "inherits": "windows-msvc",
+      "displayName": "Diligent (Ninja + vcpkg)",
+      "description": "Release build with Diligent clustered-forward primary view (D3D12).",
+      "binaryDir": "${sourceDir}/build-diligent",
+      "cacheVariables": {
+        "RAYTRACER_DILIGENT": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -55,6 +65,12 @@
       "name": "windows-msvc-debug",
       "configurePreset": "windows-msvc-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "diligent",
+      "configurePreset": "diligent",
+      "configuration": "Release",
+      "targets": ["diligent_smoke", "raytracer"]
     }
   ]
 }

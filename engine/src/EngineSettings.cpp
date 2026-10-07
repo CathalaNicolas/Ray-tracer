@@ -93,7 +93,7 @@ bool applyEngineSetting(const std::string &key, const std::string &value)
     else if (key == "view_distance")
         s.viewDistance = number > 1 ? number : s.viewDistance;
     else if (key == "shadow_map")
-        s.shadowMapSize = clampInt(number, 256, 2048);
+        s.shadowMapSize = clampInt(number, 256, 4096);
     else if (key == "particle_density")
         s.particleDensity = number >= 0 ? number : s.particleDensity;
     else if (key == "frustum_near")

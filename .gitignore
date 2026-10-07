@@ -1,5 +1,7 @@
 dist/
 build/
+build-debug/
+build-diligent/
 vcpkg_installed/
 vcpkg/
 *.o
@@ -14,3 +16,4 @@ raytracer.log
 *.a
 render.png
 cooked/
+plans
